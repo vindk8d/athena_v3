@@ -13,7 +13,7 @@ To guide an AI assistant in creating a detailed, step-by-step task list in Markd
 
 - **Format:** Markdown (`.md`)
 - **Location:** `/tasks/`
-- **Filename:** `TASKS-[PRD-FILE-NAME].md` (e.g., `TASKS-PRD-USER-PROFILE-EDITING.md`)
+- **Filename:** `tasks-[prd-file-name].md` (e.g., `tasks-prd-user-profile-editing.md`)
 
 ## Process
 
@@ -24,13 +24,20 @@ To guide an AI assistant in creating a detailed, step-by-step task list in Markd
 5.  **Phase 2: Generate Sub-Tasks:** Once the user confirms, break down each parent task into smaller, actionable sub-tasks. Ensure sub-tasks logically follow from the parent task and cover the implementation details implied by the PRD.
 6.  **Identify Relevant Files:** Based on the tasks and PRD, identify potential files that will need to be created or modified. List these under the `Relevant Files` section with a brief description of their purpose in relation to the tasks.
 7.  **Generate Final Output:** Combine the parent tasks, sub-tasks, and relevant files into the final Markdown structure.
-8.  **Save Task List:** Save the generated document in the `/tasks/` directory with the filename `TASKS-[PRD-FILE-NAME].md`, where `[PRD-FILE-NAME]` matches the base name of the input PRD file (e.g., if the input was `PRD-USER-PROFILE-EDITING.md`, the output is `TASKS-PRD-USER-PROFILE-EDITING.md`).
+8.  **Save Task List:** Save the generated document in the `/tasks/` directory with the filename `tasks-[prd-file-name].md`, where `[prd-file-name]` matches the base name of the input PRD file (e.g., if the input was `prd-user-profile-editing.md`, the output is `tasks-prd-user-profile-editing.md`).
 
 ## Output Format
 
 The generated task list _must_ follow this structure:
 
 ```markdown
+
+### Relevant Files
+
+- `path/to/potential/file1.ts` - Brief description of why this file is relevant (e.g., Contains the main component for this feature).
+- `path/to/another/file.tsx` - Brief description (e.g., API route handler for data submission).
+- `lib/utils/helpers.ts` - Brief description (e.g., Utility functions needed for calculations).
+
 ## Tasks
 
 - [ ] 1.0 Parent Task Title
@@ -42,11 +49,6 @@ The generated task list _must_ follow this structure:
   - [ ] 2.3 Sub-task description
 - [ ] 3.0 Parent Task Title (may not have sub-tasks if simple enough)
 
-### Relevant Files
-
-- `path/to/potential/file1.ts` - Brief description of why this file is relevant (e.g., Contains the main component for this feature).
-- `path/to/another/file.tsx` - Brief description (e.g., API route handler for data submission).
-- `lib/utils/helpers.ts` - Brief description (e.g., Utility functions needed for calculations).
 ```
 
 ## Interaction Model

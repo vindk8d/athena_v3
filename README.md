@@ -58,19 +58,19 @@ You'll now have a well-structured task list, often with tasks and sub-tasks, rea
 
 ### 4️⃣ Instruct the AI to Work Through Tasks (and Mark Completion)
 
-To ensure methodical progress and allow for verification, we'll use `task-list.mdc`. This command instructs the AI to focus on one task at a time and wait for your go-ahead before moving to the next.
+To ensure methodical progress and allow for verification, we'll use `process-task-list.mdc`. This command instructs the AI to focus on one task at a time and wait for your go-ahead before moving to the next.
 
-1.  Create or ensure you have the `task-list.mdc` file accessible.
+1.  Create or ensure you have the `process-task-list.mdc` file accessible.
 2.  In Cursor's Agent chat, tell the AI to start with the first task (e.g., `1.1`):
 
     ```
-    Please start on task 1.1 and use @task-list.mdc
+    Please start on task 1.1 and use @process-task-list.mdc
     ```
-    *(Important: You only need to reference `@task-list.mdc` for the *first* task. The instructions within it guide the AI for subsequent tasks.)*
+    *(Important: You only need to reference `@process-task-list.mdc` for the *first* task. The instructions within it guide the AI for subsequent tasks.)*
 
     The AI will attempt the task and then prompt you to review.
 
-    ![Example of starting on a task with task-list.mdc](https://pbs.twimg.com/media/Go6I41KWcAAAlHc?format=jpg&name=medium)
+    ![Example of starting on a task with process-task-list.mdc](https://pbs.twimg.com/media/Go6I41KWcAAAlHc?format=jpg&name=medium)
 
 ### 5️⃣ Review, Approve, and Progress ✅
 
@@ -88,7 +88,7 @@ While it's not always perfect, this method has proven to be a very reliable way 
 
 *   **`create-prd.mdc`**: Guides the AI in generating a Product Requirement Document for your feature.
 *   **`generate-tasks-from-prd.mdc`**: Takes a PRD markdown file as input and helps the AI break it down into a detailed, step-by-step implementation task list.
-*   **`task-list.mdc`**: Instructs the AI on how to process the generated task list, tackling one task at a time and waiting for your approval before proceeding. (This file also contains logic for the AI to mark tasks as complete).
+*   **`process-task-list.mdc`**: Instructs the AI on how to process the generated task list, tackling one task at a time and waiting for your approval before proceeding. (This file also contains logic for the AI to mark tasks as complete).
 
 ## 🌟 Benefits
 

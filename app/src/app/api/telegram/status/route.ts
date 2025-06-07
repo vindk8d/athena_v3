@@ -1,24 +1,31 @@
 import { NextResponse } from 'next/server'
-import { getTelegramService } from '@/src/lib/telegram'
+import TelegramBot from 'node-telegram-bot-api'
 
 export async function GET() {
   try {
-    const telegramService = await getTelegramService()
-    const webhookInfo = await telegramService.getWebhookInfo()
+    const botToken = process.env.TELEGRAM_BOT_TOKEN
+    const webhookUrl = process.env.TELEGRAM_WEBHOOK_URL
+
+    if (!botToken) {
+      throw new Error('TELEGRAM_BOT_TOKEN is not configured')
+    }
+
+    const bot = new TelegramBot(botToken, { webHook: true })
+    const info = await bot.getWebHookInfo()
 
     return NextResponse.json({
       status: 'ok',
       webhook: {
-        url: webhookInfo.url,
-        isActive: webhookInfo.isActive,
-        lastError: webhookInfo.lastError,
-        pendingUpdates: webhookInfo.pendingUpdateCount,
-        maxConnections: webhookInfo.maxConnections,
-        ipAddress: webhookInfo.ipAddress
+        url: info.url || '',
+        isActive: info.url === webhookUrl,
+        lastError: info.last_error_message,
+        pendingUpdates: info.pending_update_count || 0,
+        maxConnections: info.max_connections || 40,
+        ipAddress: info.ip_address
       },
       environment: {
-        webhookUrl: process.env.TELEGRAM_WEBHOOK_URL,
-        hasBotToken: !!process.env.TELEGRAM_BOT_TOKEN
+        webhookUrl: webhookUrl,
+        hasBotToken: !!botToken
       }
     })
   } catch (error) {

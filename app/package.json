@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start -p ${PORT:-10000}",
+    "start": "next start -p $PORT",
     "lint": "next lint",
     "setup-telegram": "node src/scripts/setup-telegram-webhook.js"
   },

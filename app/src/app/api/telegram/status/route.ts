@@ -6,8 +6,21 @@ export async function GET() {
     const botToken = process.env.TELEGRAM_BOT_TOKEN
     const webhookUrl = process.env.TELEGRAM_WEBHOOK_URL
 
+    // Debug logging
+    console.log('Environment check:', {
+      hasToken: !!botToken,
+      tokenLength: botToken?.length,
+      hasWebhookUrl: !!webhookUrl,
+      webhookUrl
+    })
+
     if (!botToken) {
       throw new Error('TELEGRAM_BOT_TOKEN is not configured')
+    }
+
+    // Validate token format
+    if (!botToken.match(/^\d+:[A-Za-z0-9_-]{35}$/)) {
+      throw new Error('TELEGRAM_BOT_TOKEN format is invalid')
     }
 
     const bot = new TelegramBot(botToken, { webHook: true })
@@ -25,7 +38,8 @@ export async function GET() {
       },
       environment: {
         webhookUrl: webhookUrl,
-        hasBotToken: !!botToken
+        hasBotToken: !!botToken,
+        tokenFormat: 'valid'
       }
     })
   } catch (error) {
@@ -33,7 +47,12 @@ export async function GET() {
     return NextResponse.json(
       { 
         status: 'error',
-        error: error instanceof Error ? error.message : 'Unknown error'
+        error: error instanceof Error ? error.message : 'Unknown error',
+        debug: {
+          hasToken: !!process.env.TELEGRAM_BOT_TOKEN,
+          tokenLength: process.env.TELEGRAM_BOT_TOKEN?.length,
+          hasWebhookUrl: !!process.env.TELEGRAM_WEBHOOK_URL
+        }
       },
       { status: 500 }
     )

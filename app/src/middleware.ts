@@ -2,8 +2,8 @@ import { createServerClient, type CookieOptions } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
 
 export async function middleware(request: NextRequest) {
-  // Skip middleware for auth-related paths
-  if (request.nextUrl.pathname.startsWith('/auth/')) {
+  // Bypass middleware for webhook endpoint to prevent redirects
+  if (request.nextUrl.pathname === '/api/telegram/webhook') {
     return NextResponse.next()
   }
 
@@ -39,12 +39,7 @@ export async function middleware(request: NextRequest) {
     }
   )
 
-  const { data: { session } } = await supabase.auth.getSession()
-
-  // If user is not signed in, redirect to signin page
-  if (!session) {
-    return NextResponse.redirect(new URL('/auth/signin', request.url))
-  }
+  await supabase.auth.getUser()
 
   return response
 }
@@ -56,8 +51,8 @@ export const config = {
      * - _next/static (static files)
      * - _next/image (image optimization files)
      * - favicon.ico (favicon file)
-     * - public folder
+     * Feel free to modify this pattern to include more paths.
      */
-    '/((?!_next/static|_next/image|favicon.ico|public/).*)',
+    '/((?!_next/static|_next/image|favicon.ico).*)',
   ],
 }

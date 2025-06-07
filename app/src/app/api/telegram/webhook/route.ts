@@ -5,6 +5,25 @@ import { createClient } from '../../../../utils/supabase/server'
 // Initialize bot with token - use polling: false to avoid internal webhook server
 const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN!, { polling: false })
 
+// Helper function to create a response with consistent headers
+function createResponse(body: any, status = 200) {
+  return new NextResponse(JSON.stringify(body), {
+    status,
+    headers: {
+      'Content-Type': 'application/json',
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type',
+      'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
+      'Pragma': 'no-cache',
+      'Expires': '0',
+      'X-Content-Type-Options': 'nosniff',
+      'X-Frame-Options': 'DENY',
+      'X-XSS-Protection': '1; mode=block'
+    }
+  })
+}
+
 export async function POST(request: Request) {
   try {
     // Log request details
@@ -43,18 +62,7 @@ export async function POST(request: Request) {
     }
 
     // Create response with detailed headers
-    const response = new NextResponse(JSON.stringify({ status: 'ok' }), {
-      status: 200,
-      headers: {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'POST, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type',
-        'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
-        'Pragma': 'no-cache',
-        'Expires': '0'
-      }
-    })
+    const response = createResponse({ status: 'ok' })
     
     console.log('Sending response:', {
       status: response.status,
@@ -65,24 +73,10 @@ export async function POST(request: Request) {
     return response
   } catch (error) {
     console.error('Error handling Telegram webhook:', error)
-    return new NextResponse(
-      JSON.stringify({ 
-        error: 'Internal server error',
-        details: error instanceof Error ? error.message : 'Unknown error'
-      }),
-      { 
-        status: 500,
-        headers: {
-          'Content-Type': 'application/json',
-          'Access-Control-Allow-Origin': '*',
-          'Access-Control-Allow-Methods': 'POST, OPTIONS',
-          'Access-Control-Allow-Headers': 'Content-Type',
-          'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
-          'Pragma': 'no-cache',
-          'Expires': '0'
-        }
-      }
-    )
+    return createResponse({ 
+      error: 'Internal server error',
+      details: error instanceof Error ? error.message : 'Unknown error'
+    }, 500)
   }
 }
 
@@ -90,17 +84,7 @@ export async function POST(request: Request) {
 export async function OPTIONS() {
   console.log('OPTIONS request received for webhook')
   
-  const response = new NextResponse(null, {
-    status: 204,
-    headers: {
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'POST, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type',
-      'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
-      'Pragma': 'no-cache',
-      'Expires': '0'
-    }
-  })
+  const response = createResponse(null, 204)
   
   console.log('Sending OPTIONS response:', {
     status: response.status,

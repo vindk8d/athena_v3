@@ -35,26 +35,24 @@ const nextConfig = {
   },
   // Disable redirects for the webhook endpoint
   async redirects() {
-    return [
-      {
-        source: '/api/telegram/webhook',
-        destination: '/api/telegram/webhook',
-        permanent: false,
-        has: [
-          {
-            type: 'header',
-            key: 'content-type',
-            value: 'application/json',
-          },
-        ],
-      },
-    ]
+    return []
   },
   // Add logging for debugging
   logging: {
     fetches: {
       fullUrl: true,
     },
+  },
+  // Ensure trailing slashes are handled correctly
+  trailingSlash: false,
+  // Disable automatic HTTPS redirect for the webhook endpoint
+  async rewrites() {
+    return [
+      {
+        source: '/api/telegram/webhook',
+        destination: '/api/telegram/webhook',
+      },
+    ]
   },
 }
 

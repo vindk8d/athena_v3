@@ -1,12 +1,37 @@
-<<<<<<< HEAD
 import { NextResponse } from 'next/server'
-import { getTelegramService } from '@/lib/telegram'
+import TelegramBot from 'node-telegram-bot-api'
+import { createClient } from '../../../../utils/supabase/server'
+
+// Initialize bot with token
+const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN!, { webHook: true })
 
 export async function POST(request: Request) {
   try {
     const update = await request.json()
-    const telegramService = await getTelegramService()
-    await telegramService.handleUpdate(update)
+    const supabase = createClient()
+
+    // Handle the message
+    if (update.message) {
+      const { message } = update
+      const chatId = message.chat.id
+
+      // Log the webhook event in Supabase
+      const { error: logError } = await supabase
+        .from('webhook_logs')
+        .insert({
+          type: 'telegram',
+          payload: update,
+          timestamp: new Date().toISOString()
+        })
+
+      if (logError) {
+        console.error('Error logging webhook:', logError)
+      }
+
+      // Send a simple response
+      await bot.sendMessage(chatId, 'Message received!')
+    }
+
     return NextResponse.json({ status: 'ok' })
   } catch (error) {
     console.error('Error handling Telegram webhook:', error)
@@ -14,20 +39,5 @@ export async function POST(request: Request) {
       { error: 'Internal server error' },
       { status: 500 }
     )
-=======
-import { NextResponse } from 'next/server';
-import { createClient } from '../../../../utils/supabase/server';
-
-export async function POST(request: Request) {
-  try {
-    const body = await request.json();
-    const supabase = createClient();
-    // Handle the webhook logic here, e.g., verify/update user, log event, etc.
-    // Example: const { data, error } = await supabase.from('users').select('*');
-    return NextResponse.json({ success: true });
-  } catch (error) {
-    console.error('Error handling Telegram webhook:', error);
-    return NextResponse.json({ success: false, error: 'Internal Server Error' }, { status: 500 });
->>>>>>> athena-renamed
   }
 } 

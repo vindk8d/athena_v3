@@ -1,5 +1,4 @@
-import { calendar_v3 } from '@googleapis/calendar'
-import { google } from 'googleapis'
+import { calendar_v3, google } from 'googleapis'
 import { createClient } from './supabase'
 
 // Rate limiting configuration

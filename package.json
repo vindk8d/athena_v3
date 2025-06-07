@@ -1,0 +1,6 @@
+{
+  "dependencies": {
+    "@googleapis/calendar": "^10.0.1",
+    "googleapis": "^150.0.1"
+  }
+}

@@ -8,7 +8,7 @@ const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN!, { webHook: true })
 export async function POST(request: Request) {
   try {
     const update = await request.json()
-    const supabase = createClient()
+    const supabase = await createClient()
 
     // Handle the message
     if (update.message) {

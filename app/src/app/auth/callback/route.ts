@@ -7,7 +7,7 @@ export async function GET(request: Request) {
   const code = requestUrl.searchParams.get('code')
 
   if (code) {
-    const cookieStore = cookies()
+    const cookieStore = await cookies()
     const supabase = createServerClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL!,
       process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
@@ -26,7 +26,13 @@ export async function GET(request: Request) {
       }
     )
 
+    // Exchange the temporary auth code for a session
     const { error } = await supabase.auth.exchangeCodeForSession(code)
+    
+    // If successful (no error), redirect to homepage at domain root
+    // Based on the page.tsx file, this will show a welcome page with user info and sign out button
+    // e.g. if running locally: http://localhost:3000/
+    // e.g. in production: https://your-domain.com/
     if (!error) {
       return NextResponse.redirect(new URL('/', requestUrl.origin))
     }

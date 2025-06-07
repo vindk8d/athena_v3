@@ -33,8 +33,12 @@ const nextConfig = {
       },
     ]
   },
-  // Disable redirects for the webhook endpoint
+  // Completely disable all redirects
   async redirects() {
+    return []
+  },
+  // Completely disable all rewrites
+  async rewrites() {
     return []
   },
   // Add logging for debugging
@@ -45,14 +49,10 @@ const nextConfig = {
   },
   // Ensure trailing slashes are handled correctly
   trailingSlash: false,
-  // Disable automatic HTTPS redirect for the webhook endpoint
-  async rewrites() {
-    return [
-      {
-        source: '/api/telegram/webhook',
-        destination: '/api/telegram/webhook',
-      },
-    ]
+  // Disable automatic HTTPS redirect
+  experimental: {
+    skipTrailingSlashRedirect: true,
+    skipMiddlewareUrlNormalize: true,
   },
 }
 

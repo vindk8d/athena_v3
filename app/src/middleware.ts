@@ -2,8 +2,9 @@ import { createServerClient, type CookieOptions } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
 
 export async function middleware(request: NextRequest) {
-  // Bypass middleware for webhook endpoint to prevent redirects
-  if (request.nextUrl.pathname === '/api/telegram/webhook') {
+  // Completely bypass middleware for API routes and webhook endpoint
+  if (request.nextUrl.pathname.startsWith('/api/') || 
+      request.nextUrl.pathname === '/api/telegram/webhook') {
     return NextResponse.next()
   }
 
@@ -51,8 +52,9 @@ export const config = {
      * - _next/static (static files)
      * - _next/image (image optimization files)
      * - favicon.ico (favicon file)
+     * - api/ (API routes)
      * Feel free to modify this pattern to include more paths.
      */
-    '/((?!_next/static|_next/image|favicon.ico).*)',
+    '/((?!_next/static|_next/image|favicon.ico|api/).*)',
   ],
 }

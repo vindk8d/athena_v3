@@ -5,24 +5,22 @@ import { createClient } from '../../../../utils/supabase/server'
 // Initialize bot with token - use polling: false to avoid internal webhook server
 const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN!, { polling: false })
 
-// Helper function to create a response with consistent headers
-function createResponse(body: any, status = 200) {
-  return new NextResponse(JSON.stringify(body), {
-    status,
-    headers: {
-      'Content-Type': 'application/json',
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'POST, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type',
-      'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
-      'Pragma': 'no-cache',
-      'Expires': '0',
-      'X-Content-Type-Options': 'nosniff',
-      'X-Frame-Options': 'DENY',
-      'X-XSS-Protection': '1; mode=block'
-    }
-  })
+// Define headers that will be used for all responses
+const RESPONSE_HEADERS = {
+  'Content-Type': 'application/json',
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type',
+  'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
+  'Pragma': 'no-cache',
+  'Expires': '0',
+  'X-Content-Type-Options': 'nosniff',
+  'X-Frame-Options': 'DENY',
+  'X-XSS-Protection': '1; mode=block'
 }
+
+export const dynamic = 'force-dynamic'
+export const runtime = 'nodejs'
 
 export async function POST(request: Request) {
   try {
@@ -61,8 +59,11 @@ export async function POST(request: Request) {
       await bot.sendMessage(chatId, 'Message received!')
     }
 
-    // Create response with detailed headers
-    const response = createResponse({ status: 'ok' })
+    // Create a direct response without using NextResponse
+    const response = new Response(JSON.stringify({ status: 'ok' }), {
+      status: 200,
+      headers: RESPONSE_HEADERS
+    })
     
     console.log('Sending response:', {
       status: response.status,
@@ -73,10 +74,26 @@ export async function POST(request: Request) {
     return response
   } catch (error) {
     console.error('Error handling Telegram webhook:', error)
-    return createResponse({ 
-      error: 'Internal server error',
-      details: error instanceof Error ? error.message : 'Unknown error'
-    }, 500)
+    
+    // Create a direct error response
+    const response = new Response(
+      JSON.stringify({ 
+        error: 'Internal server error',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      }),
+      { 
+        status: 500,
+        headers: RESPONSE_HEADERS
+      }
+    )
+    
+    console.log('Sending error response:', {
+      status: response.status,
+      headers: Object.fromEntries(response.headers.entries()),
+      timestamp: new Date().toISOString()
+    })
+    
+    return response
   }
 }
 
@@ -84,7 +101,11 @@ export async function POST(request: Request) {
 export async function OPTIONS() {
   console.log('OPTIONS request received for webhook')
   
-  const response = createResponse(null, 204)
+  // Create a direct response for OPTIONS
+  const response = new Response(null, {
+    status: 204,
+    headers: RESPONSE_HEADERS
+  })
   
   console.log('Sending OPTIONS response:', {
     status: response.status,

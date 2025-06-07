@@ -3,41 +3,15 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-<<<<<<< HEAD
     "dev": "next dev --turbopack",
-=======
-    "dev": "next dev",
->>>>>>> athena-renamed
     "build": "next build",
     "start": "next start",
     "lint": "next lint"
   },
   "dependencies": {
-<<<<<<< HEAD
+    "@googleapis/calendar": "^9.0.0",
     "@supabase/ssr": "^0.6.1",
     "@supabase/supabase-js": "^2.50.0",
-    "next": "15.3.3",
-    "node-telegram-bot-api": "^0.66.0",
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0"
-  },
-  "devDependencies": {
-    "@eslint/eslintrc": "^3",
-    "@tailwindcss/postcss": "^4",
-    "@types/node": "^20",
-    "@types/node-telegram-bot-api": "^0.64.9",
-    "@types/react": "^19",
-    "@types/react-dom": "^19",
-    "eslint": "^9",
-    "eslint-config-next": "15.3.3",
-    "tailwindcss": "^4",
-    "typescript": "^5"
-  }
-}
-=======
-    "@googleapis/calendar": "^9.0.0",
-    "@supabase/ssr": "0.6.1",
-    "@supabase/supabase-js": "^2.39.0",
     "next": "14.1.0",
     "node-telegram-bot-api": "^0.64.0",
     "react": "^18.2.0",
@@ -58,5 +32,4 @@
   "engines": {
     "node": ">=18.0.0"
   }
-} 
->>>>>>> athena-renamed
+}

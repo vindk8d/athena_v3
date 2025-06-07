@@ -35,8 +35,12 @@ async function setupWebhook() {
       timestamp: new Date().toISOString()
     })
     
-    // Set up webhook
-    await telegramService.setupWebhook()
+    // Set up webhook with additional options
+    await telegramService.setupWebhook({
+      url: webhookUrl,
+      max_connections: 40,
+      allowed_updates: ['message', 'callback_query']
+    })
     
     // Get webhook info after setting
     const afterInfo = await telegramService.getWebhookInfo()

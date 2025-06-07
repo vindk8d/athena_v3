@@ -20,14 +20,22 @@ export class TelegramService {
     this.webhookUrl = webhookUrl
   }
 
-  async setupWebhook(): Promise<void> {
+  async setupWebhook(options?: {
+    url?: string;
+    max_connections?: number;
+    allowed_updates?: string[];
+  }): Promise<void> {
     try {
       console.log('Setting up webhook:', {
-        webhookUrl: this.webhookUrl,
+        webhookUrl: options?.url || this.webhookUrl,
+        options,
         timestamp: new Date().toISOString()
       })
       
-      await this.bot.setWebHook(this.webhookUrl)
+      await this.bot.setWebHook(options?.url || this.webhookUrl, {
+        max_connections: options?.max_connections,
+        allowed_updates: options?.allowed_updates
+      })
       console.log('Webhook set successfully')
     } catch (error) {
       console.error('Error setting webhook:', error)

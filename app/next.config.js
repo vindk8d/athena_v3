@@ -25,6 +25,10 @@ const nextConfig = {
       },
     ]
   },
+  // Add server configuration
+  server: {
+    port: process.env.PORT || 10000,
+  },
 }
 
 module.exports = nextConfig 

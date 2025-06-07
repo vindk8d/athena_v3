@@ -1,12 +1,23 @@
+<<<<<<< HEAD
 # Executive Assistant Chatbot - Product Requirements Document
+=======
+# Athena - Product Requirements Document
+>>>>>>> athena-renamed
 
 ## 1. Product Overview
 
 ### Vision Statement
+<<<<<<< HEAD
 Develop an AI-powered executive assistant chatbot that seamlessly integrates with Google Calendar and Telegram to provide intelligent scheduling, meeting coordination, and calendar management for senior managers.
 
 ### Product Summary
 The Executive Assistant Chatbot is a conversational AI system that acts as a personal scheduling assistant, capable of reading calendar data, suggesting optimal meeting times, coordinating with colleagues, and managing calendar invites through natural language interactions via Telegram.
+=======
+Develop Athena, an AI-powered executive assistant chatbot that seamlessly integrates with Google Calendar and Telegram to provide intelligent scheduling, meeting coordination, and calendar management for senior managers.
+
+### Product Summary
+Athena is a conversational AI system that acts as a personal scheduling assistant, capable of reading calendar data, suggesting optimal meeting times, coordinating with colleagues, and managing calendar invites through natural language interactions via Telegram.
+>>>>>>> athena-renamed
 
 ## 2. Target Users
 
@@ -220,4 +231,8 @@ messages (
 
 ## Conclusion
 
+<<<<<<< HEAD
 The Executive Assistant Chatbot represents a significant opportunity to enhance productivity for senior managers through intelligent calendar management and scheduling automation. By leveraging modern AI technologies and robust integrations, this product will deliver substantial value while maintaining the security and reliability required for executive-level operations. 
+=======
+The Athena represents a significant opportunity to enhance productivity for senior managers through intelligent calendar management and scheduling automation. By leveraging modern AI technologies and robust integrations, this product will deliver substantial value while maintaining the security and reliability required for executive-level operations. 
+>>>>>>> athena-renamed

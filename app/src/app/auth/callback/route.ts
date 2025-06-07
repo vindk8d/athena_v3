@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 import { createServerClient, type CookieOptions } from '@supabase/ssr'
 import { cookies } from 'next/headers'
 import { NextResponse } from 'next/server'
@@ -34,4 +35,15 @@ export async function GET(request: Request) {
 
   // Return the user to an error page with some instructions
   return NextResponse.redirect(new URL('/auth/auth-error', requestUrl.origin))
+=======
+import { NextResponse } from 'next/server';
+import { createClient } from '../../../utils/supabase/server';
+
+export async function GET(request: Request) {
+  const supabase = createClient();
+  // Example: get the user session or handle callback logic
+  // const { data: { user } } = await supabase.auth.getUser();
+  // Redirect or handle as needed
+  return NextResponse.redirect('/');
+>>>>>>> athena-renamed
 } 

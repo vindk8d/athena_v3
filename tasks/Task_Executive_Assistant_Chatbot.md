@@ -1,4 +1,8 @@
+<<<<<<< HEAD
 # Executive Assistant Chatbot - Development Task List
+=======
+# Athena - Development Task List
+>>>>>>> athena-renamed
 
 ## Phase 1: Core Infrastructure (4 weeks)
 

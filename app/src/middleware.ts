@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 import { createServerClient, type CookieOptions } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
 
@@ -47,6 +48,13 @@ export async function middleware(request: NextRequest) {
   }
 
   return response
+=======
+import { type NextRequest } from 'next/server';
+import { updateSession } from './utils/supabase/middleware';
+
+export async function middleware(request: NextRequest) {
+  return await updateSession(request);
+>>>>>>> athena-renamed
 }
 
 export const config = {
@@ -60,4 +68,8 @@ export const config = {
      */
     '/((?!_next/static|_next/image|favicon.ico|public/).*)',
   ],
+<<<<<<< HEAD
 } 
+=======
+}; 
+>>>>>>> athena-renamed

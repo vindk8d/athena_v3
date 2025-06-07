@@ -30,6 +30,30 @@ export class TelegramService {
     }
   }
 
+  async getWebhookInfo(): Promise<{
+    url: string
+    isActive: boolean
+    lastError?: string
+    pendingUpdateCount: number
+    maxConnections: number
+    ipAddress?: string
+  }> {
+    try {
+      const info = await this.bot.getWebHookInfo()
+      return {
+        url: info.url || '',
+        isActive: info.url === this.webhookUrl,
+        lastError: info.last_error_message,
+        pendingUpdateCount: info.pending_update_count || 0,
+        maxConnections: info.max_connections || 40,
+        ipAddress: info.ip_address
+      }
+    } catch (error) {
+      console.error('Error getting webhook info:', error)
+      throw error
+    }
+  }
+
   async setupCommands(): Promise<void> {
     try {
       await this.bot.setMyCommands(BOT_COMMANDS)

@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { getTelegramService } from '../../../lib/telegram'
+import { getTelegramService } from '@/src/lib/telegram'
 
 export async function GET() {
   try {

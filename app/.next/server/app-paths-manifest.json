@@ -1,1 +1,9 @@
-{}
+{
+  "/api/telegram/webhook/route": "app/api/telegram/webhook/route.js",
+  "/api/telegram/status/route": "app/api/telegram/status/route.js",
+  "/_not-found/page": "app/_not-found/page.js",
+  "/favicon.ico/route": "app/favicon.ico/route.js",
+  "/auth/callback/route": "app/auth/callback/route.js",
+  "/auth/signin/page": "app/auth/signin/page.js",
+  "/page": "app/page.js"
+}

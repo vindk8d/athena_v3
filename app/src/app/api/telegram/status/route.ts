@@ -11,7 +11,8 @@ export async function GET() {
       hasToken: !!botToken,
       tokenLength: botToken?.length,
       hasWebhookUrl: !!webhookUrl,
-      webhookUrl
+      webhookUrl,
+      timestamp: new Date().toISOString()
     })
 
     if (!botToken) {
@@ -26,6 +27,17 @@ export async function GET() {
     // Use polling: false to avoid starting internal webhook server
     const bot = new TelegramBot(botToken, { polling: false })
     const info = await bot.getWebHookInfo()
+    
+    console.log('Webhook info from Telegram:', {
+      url: info.url,
+      has_custom_certificate: info.has_custom_certificate,
+      pending_update_count: info.pending_update_count,
+      last_error_date: info.last_error_date ? new Date(info.last_error_date * 1000).toISOString() : null,
+      last_error_message: info.last_error_message,
+      max_connections: info.max_connections,
+      ip_address: info.ip_address,
+      timestamp: new Date().toISOString()
+    })
 
     return NextResponse.json({
       status: 'ok',
@@ -52,7 +64,9 @@ export async function GET() {
         debug: {
           hasToken: !!process.env.TELEGRAM_BOT_TOKEN,
           tokenLength: process.env.TELEGRAM_BOT_TOKEN?.length,
-          hasWebhookUrl: !!process.env.TELEGRAM_WEBHOOK_URL
+          hasWebhookUrl: !!process.env.TELEGRAM_WEBHOOK_URL,
+          webhookUrl: process.env.TELEGRAM_WEBHOOK_URL,
+          timestamp: new Date().toISOString()
         }
       },
       { status: 500 }

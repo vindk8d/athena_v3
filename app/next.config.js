@@ -17,9 +17,44 @@ const nextConfig = {
             key: 'Access-Control-Allow-Headers',
             value: 'Content-Type',
           },
+          {
+            key: 'Cache-Control',
+            value: 'no-store, no-cache, must-revalidate, proxy-revalidate',
+          },
+          {
+            key: 'Pragma',
+            value: 'no-cache',
+          },
+          {
+            key: 'Expires',
+            value: '0',
+          },
         ],
       },
     ]
+  },
+  // Disable redirects for the webhook endpoint
+  async redirects() {
+    return [
+      {
+        source: '/api/telegram/webhook',
+        destination: '/api/telegram/webhook',
+        permanent: false,
+        has: [
+          {
+            type: 'header',
+            key: 'content-type',
+            value: 'application/json',
+          },
+        ],
+      },
+    ]
+  },
+  // Add logging for debugging
+  logging: {
+    fetches: {
+      fullUrl: true,
+    },
   },
 }
 

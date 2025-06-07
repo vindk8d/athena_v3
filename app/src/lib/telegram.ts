@@ -22,6 +22,11 @@ export class TelegramService {
 
   async setupWebhook(): Promise<void> {
     try {
+      console.log('Setting up webhook:', {
+        webhookUrl: this.webhookUrl,
+        timestamp: new Date().toISOString()
+      })
+      
       await this.bot.setWebHook(this.webhookUrl)
       console.log('Webhook set successfully')
     } catch (error) {
@@ -39,8 +44,10 @@ export class TelegramService {
     ipAddress?: string
   }> {
     try {
+      console.log('Getting webhook info...')
       const info = await this.bot.getWebHookInfo()
-      return {
+      
+      const result = {
         url: info.url || '',
         isActive: info.url === this.webhookUrl,
         lastError: info.last_error_message,
@@ -48,6 +55,13 @@ export class TelegramService {
         maxConnections: info.max_connections || 40,
         ipAddress: info.ip_address
       }
+      
+      console.log('Webhook info retrieved:', {
+        ...result,
+        timestamp: new Date().toISOString()
+      })
+      
+      return result
     } catch (error) {
       console.error('Error getting webhook info:', error)
       throw error
@@ -56,6 +70,7 @@ export class TelegramService {
 
   async setupCommands(): Promise<void> {
     try {
+      console.log('Setting up bot commands...')
       await this.bot.setMyCommands(BOT_COMMANDS)
       console.log('Bot commands set successfully')
     } catch (error) {

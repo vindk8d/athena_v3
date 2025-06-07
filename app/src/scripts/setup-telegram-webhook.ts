@@ -3,10 +3,14 @@ import { TelegramService } from '../lib/telegram'
 async function setupWebhook() {
   try {
     const botToken = process.env.TELEGRAM_BOT_TOKEN
-    const webhookUrl = 'https://athena-v3-rwuk.onrender.com/api/telegram/webhook'
+    const webhookUrl = process.env.TELEGRAM_WEBHOOK_URL || 'https://athena-v3-rwuk.onrender.com/api/telegram/webhook'
 
     if (!botToken) {
       throw new Error('TELEGRAM_BOT_TOKEN is not set in environment variables')
+    }
+
+    if (!webhookUrl) {
+      throw new Error('TELEGRAM_WEBHOOK_URL is not set in environment variables')
     }
 
     const telegramService = new TelegramService(botToken, webhookUrl)

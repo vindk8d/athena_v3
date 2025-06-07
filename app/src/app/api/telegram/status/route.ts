@@ -23,7 +23,8 @@ export async function GET() {
       throw new Error('TELEGRAM_BOT_TOKEN format is invalid')
     }
 
-    const bot = new TelegramBot(botToken, { webHook: true })
+    // Use polling: false to avoid starting internal webhook server
+    const bot = new TelegramBot(botToken, { polling: false })
     const info = await bot.getWebHookInfo()
 
     return NextResponse.json({

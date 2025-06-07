@@ -16,7 +16,7 @@ export class TelegramService {
   private webhookUrl: string
 
   constructor(token: string, webhookUrl: string) {
-    this.bot = new TelegramBot(token, { webHook: true })
+    this.bot = new TelegramBot(token, { polling: false })
     this.webhookUrl = webhookUrl
   }
 

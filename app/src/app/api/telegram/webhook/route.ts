@@ -2,8 +2,8 @@ import { NextResponse } from 'next/server'
 import TelegramBot from 'node-telegram-bot-api'
 import { createClient } from '../../../../utils/supabase/server'
 
-// Initialize bot with token
-const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN!, { webHook: true })
+// Initialize bot with token - use polling: false to avoid internal webhook server
+const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN!, { polling: false })
 
 export async function POST(request: Request) {
   try {

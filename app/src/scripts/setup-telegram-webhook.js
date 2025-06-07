@@ -4,19 +4,23 @@ const TelegramBot = require('node-telegram-bot-api');
 async function setupWebhook() {
   try {
     const botToken = process.env.TELEGRAM_BOT_TOKEN;
-    const webhookUrl = 'https://athena-v3-rwuk.onrender.com/api/telegram/webhook';
+    const webhookUrl = process.env.TELEGRAM_WEBHOOK_URL || 'https://athena-v3-rwuk.onrender.com/api/telegram/webhook';
 
     // Debug print
     console.log('Loaded TELEGRAM_BOT_TOKEN:', botToken);
+    console.log('Using webhook URL:', webhookUrl);
 
     if (!botToken) {
       throw new Error('TELEGRAM_BOT_TOKEN is not set in environment variables');
     }
 
-    // Initialize bot with explicit API endpoint
+    if (!webhookUrl) {
+      throw new Error('TELEGRAM_WEBHOOK_URL is not set in environment variables');
+    }
+
+    // Initialize bot with explicit API endpoint - use polling: false to avoid internal webhook server
     const bot = new TelegramBot(botToken, {
       apiRoot: 'https://api.telegram.org',
-      webHook: true,
       polling: false
     });
 

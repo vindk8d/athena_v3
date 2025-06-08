@@ -24,5 +24,8 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
-# Run the application
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"] 
+# Run the application on the port Render assigns
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+
+# Note: If your backend needs to know the frontend URL, set an environment variable (e.g., FRONTEND_URL)
+# and use it in your backend code as needed. Render does not automatically provide the frontend URL to the backend. 

@@ -1,24 +1,27 @@
-# Athena Executive Assistant LangChain Server v2.0
+# Athena Executive Assistant Server v2.0
 
-This is the Python FastAPI server that handles advanced natural language processing for the Athena Executive Assistant chatbot using LangChain with LCEL (LangChain Expression Language), agent executors, and Google Calendar integration.
+This is the Python FastAPI server that powers Athena, an AI executive assistant that acts on behalf of authenticated users to coordinate meetings and manage schedules with their colleagues using LangChain with LCEL (LangChain Expression Language), agent executors, and Google Calendar integration.
 
 ## 🆕 Version 2.0 Features
 
-- **LCEL Agent Architecture**: Modern LangChain agent using OpenAI Functions
-- **Enhanced Memory Management**: Database-integrated conversation memory
-- **Google Calendar Tools**: Full calendar management capabilities
-- **Intelligent Tool Selection**: Agent automatically chooses appropriate tools
-- **Advanced Intent Detection**: Context-aware intent analysis
-- **Structured Information Extraction**: Rich metadata extraction from conversations
+- **Executive Assistant Persona**: AI that acts as the professional representative of authenticated users
+- **Multi-User Support**: Supports multiple executives with their own colleague networks
+- **User-Colleague Coordination**: Coordinates with colleagues on behalf of the authenticated user
+- **LCEL Agent Architecture**: Modern LangChain agent using OpenAI Functions optimized for executive assistant tasks
+- **User-Centric Calendar Management**: All calendar operations focused on the authenticated user's schedule
+- **Professional Communication**: Always introduces itself as "[User's Name]'s executive assistant"
+- **Enhanced Memory Management**: Database-integrated conversation memory per user-colleague pair
+- **Google Calendar Tools**: Full calendar management for user calendars only
+- **Intelligent Tool Selection**: Agent automatically chooses appropriate tools for executive assistant operations
 
 ## 📁 Project Structure
 
 ```
 python-server/
-├── main.py              # FastAPI application and endpoints
-├── agent.py             # LCEL Agent with tool execution
-├── memory.py            # Enhanced memory management with database
-├── tools.py             # Google Calendar API tools
+├── main.py              # FastAPI application and executive assistant endpoints
+├── agent.py             # Executive Assistant LCEL Agent with user-centric tool execution
+├── memory.py            # Enhanced memory management with user-colleague pair isolation
+├── tools.py             # Google Calendar API tools for user calendar management
 ├── config.py            # Configuration management
 ├── requirements.txt     # Python dependencies
 ├── Dockerfile          # Container configuration
@@ -28,32 +31,35 @@ python-server/
 
 ## 🏗️ Architecture
 
-### Agent System (agent.py)
-- **ExecutiveAssistantAgent**: LCEL-based agent with tool execution
-- **OpenAI Functions Agent**: Uses function calling for tool selection
-- **Agent Executor**: Manages tool invocation and response generation
-- **Error Handling**: Graceful fallbacks and error recovery
+### Executive Assistant System (agent.py)
+- **ExecutiveAssistantAgent**: LCEL-based agent that acts on behalf of authenticated users
+- **User-Centric Operations**: All calendar operations focused on the authenticated user
+- **Professional Persona**: Maintains executive assistant identity in all interactions
+- **Colleague Coordination**: Coordinates with colleagues who want to meet with the user
+- **OpenAI Functions Agent**: Uses function calling for intelligent tool selection
+- **Agent Executor**: Manages tool invocation and response generation with executive assistant context
 
 ### Memory System (memory.py)
-- **DatabaseMemory**: Retrieves conversation history from Supabase
-- **EnhancedConversationMemory**: Combines buffer and database memory
-- **MemoryManager**: Manages memories across multiple contacts
+- **User-Colleague Memory Isolation**: Separate conversation histories per user-colleague pair
+- **DatabaseMemory**: Retrieves conversation history from Supabase with user context
+- **EnhancedConversationMemory**: Combines buffer and database memory for executive assistant conversations
+- **MemoryManager**: Manages memories across multiple users and their colleagues
 - **Token Management**: Automatic memory pruning for optimal performance
 
-### Calendar Tools (tools.py)
-- **ListCalendarsTool**: Discover available calendars
-- **GetEventsTool**: Retrieve calendar events
-- **CheckAvailabilityTool**: Check free/busy times
-- **CreateEventTool**: Schedule new meetings
-- **CalendarService**: Google Calendar API wrapper with OAuth support
+### User Calendar Tools (tools.py)
+- **ListCalendarsTool**: Discover authenticated user's available calendars
+- **GetEventsTool**: Retrieve user's calendar events
+- **CheckAvailabilityTool**: Check user's free/busy times
+- **CreateEventTool**: Schedule new meetings on user's calendar with colleagues as attendees
+- **CalendarService**: Google Calendar API wrapper with OAuth support for user calendars
 
 ## 🚀 Setup & Installation
 
 ### Prerequisites
 - Python 3.11+
 - OpenAI API Key
-- Google Calendar API credentials (for calendar features)
-- Supabase database (for memory persistence)
+- Google Calendar API credentials (for user calendar access)
+- Supabase database (for user authentication and memory persistence)
 
 ### Installation
 
@@ -73,7 +79,7 @@ python-server/
    # Required
    OPENAI_API_KEY=your_openai_api_key_here
    
-   # Optional - for database memory
+   # Required - for user authentication and database
    NEXT_PUBLIC_SUPABASE_URL=your_supabase_url
    NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key
    
@@ -95,20 +101,20 @@ python-server/
 
 ## 📡 API Endpoints
 
-### Core Processing
-- **POST** `/process-message` - Process messages with full agent capabilities
+### Core Executive Assistant Processing
+- **POST** `/process-message` - Process colleague messages with full executive assistant capabilities
 - **POST** `/simple-process` - Basic processing without calendar tools (legacy)
 
-### Agent Management
-- **GET** `/agent-info` - Get agent configuration details
-- **POST** `/reset-agent` - Reset the global agent instance
-- **POST** `/reset-conversation/{contact_id}` - Clear conversation memory
+### Executive Assistant Management
+- **GET** `/agent-info` - Get executive assistant configuration details
+- **POST** `/reset-agent` - Reset the global executive assistant instance
+- **POST** `/reset-conversation/{user_id}/{contact_id}` - Clear conversation memory for user-colleague pair
 
 ### Health & Status
 - **GET** `/health` - Server health and status
 - **GET** `/` - Server information and features
 
-## 🔧 Agent Request/Response
+## 🔧 Executive Assistant Request/Response
 
 ### Enhanced Request Format
 ```json
@@ -117,16 +123,23 @@ python-server/
     "message_id": 123,
     "chat_id": 456789,
     "user_id": 987654,
-    "text": "Schedule a meeting with john@example.com for tomorrow at 2pm",
+    "text": "I'd like to schedule a meeting with Sarah next week",
     "timestamp": "2024-01-01T12:00:00Z",
     "user_info": {
       "first_name": "John",
       "last_name": "Doe"
     }
   },
-  "contact_id": "uuid-string",
+  "contact_id": "colleague-uuid-string",
+  "user_id": "authenticated-user-uuid",
+  "user_details": {
+    "first_name": "Sarah",
+    "last_name": "Johnson",
+    "title": "CEO",
+    "timezone": "America/New_York"
+  },
   "conversation_history": [],
-  "oauth_access_token": "google_oauth_token_for_calendar_access",
+  "oauth_access_token": "user_google_oauth_token_for_calendar_access",
   "oauth_refresh_token": "optional_refresh_token"
 }
 ```
@@ -134,62 +147,73 @@ python-server/
 ### Enhanced Response Format
 ```json
 {
-  "response": "I'll help you schedule that meeting. Let me check your availability for tomorrow at 2pm...",
-  "conversation_id": "uuid-string",
-  "intent": "schedule_meeting",
+  "response": "Hello! I'm Sarah Johnson's executive assistant. I'd be happy to help you schedule a meeting with Sarah. Let me check her availability for next week...",
+  "conversation_id": "user-uuid_colleague-uuid",
+  "user_id": "authenticated-user-uuid",
+  "contact_id": "colleague-uuid",
+  "intent": "colleague_meeting_request",
   "extracted_info": {
-    "temporal_reference": "tomorrow",
-    "participants_mentioned": true,
-    "availability_checked": true,
-    "event_created": true,
+    "temporal_reference": "next_week",
+    "user_availability_checked": true,
+    "meeting_created_for_user": true,
+    "executive_assistant_interaction": true,
     "event_details": {
-      "title": "Meeting with John",
-      "start_time": "2024-01-02T14:00:00Z",
-      "end_time": "2024-01-02T15:00:00Z"
+      "title": "Meeting with John Doe",
+      "start_time": "2024-01-09T14:00:00Z",
+      "end_time": "2024-01-09T15:00:00Z",
+      "created_for_user": "authenticated-user-uuid"
     }
   },
   "tools_used": [
     {
       "tool": "check_availability",
-      "input": {"start_datetime": "2024-01-02T14:00:00Z", ...},
-      "output": "✅ Time slot is FREE"
+      "input": {"start_datetime": "2024-01-09T14:00:00Z", ...},
+      "output": "✅ Sarah is FREE for this time slot"
     },
     {
       "tool": "create_event",
-      "input": {"title": "Meeting with John", ...},
-      "output": "✅ Event created successfully!"
+      "input": {"title": "Meeting with John Doe", ...},
+      "output": "✅ Meeting scheduled on Sarah's calendar!"
     }
   ]
 }
 ```
 
-## 🛠️ Key Features
+## 🛠️ Key Executive Assistant Features
 
-### Agent Capabilities
-- **Multi-turn Conversations**: Maintains context across interactions
-- **Tool Selection**: Automatically chooses appropriate calendar tools
-- **Error Recovery**: Graceful handling of tool failures
-- **Professional Communication**: Executive assistant personality
+### Executive Assistant Capabilities
+- **User Representation**: Always acts as the executive assistant of the authenticated user
+- **Professional Identity**: Introduces self as "[User's Name]'s executive assistant"
+- **Authority to Schedule**: Full authority to manage user's calendar and schedule meetings
+- **Colleague Coordination**: Coordinates with colleagues who want to meet with the user
+- **No Colleague Authentication**: Never asks colleagues to authenticate their calendars
+
+### Multi-User Support
+- **User Isolation**: Proper data separation between different users
+- **User-Colleague Relationships**: Manages contacts per authenticated user
+- **Calendar Privacy**: Only accesses the authenticated user's calendar
+- **Professional Boundaries**: Clear separation between user and colleague permissions
 
 ### Memory Features
-- **Database Integration**: Loads last 5 messages from Supabase
-- **Buffer Management**: Efficient in-memory conversation tracking
-- **Token Optimization**: Automatic memory pruning
-- **Cross-session Persistence**: Conversations survive server restarts
+- **User-Colleague Pair Isolation**: Separate conversation histories per user-colleague relationship
+- **Database Integration**: Loads conversation history with user context
+- **Cross-session Persistence**: Conversations survive server restarts with user context
+- **Token Optimization**: Automatic memory pruning per user-colleague pair
 
-### Calendar Integration
-- **OAuth Support**: Secure Google Calendar access
-- **Multi-calendar Support**: Access multiple user calendars
-- **Availability Checking**: Free/busy time analysis
-- **Event Management**: Create, read, and manage calendar events
+### User Calendar Integration
+- **OAuth Support**: Secure Google Calendar access for authenticated users only
+- **User Calendar Focus**: All operations on the authenticated user's calendars
+- **Availability Checking**: Free/busy time analysis for the user
+- **Meeting Management**: Create meetings on user's calendar with colleagues as attendees
 
-### Intent Detection
-- `schedule_meeting` - Meeting scheduling requests
-- `check_availability` - Availability inquiries  
-- `view_calendar` - Calendar viewing requests
-- `explore_calendars` - Calendar discovery
-- `modify_meeting` - Meeting changes/cancellations
-- `general_conversation` - General chat
+### Intent Detection (Executive Assistant Context)
+- `colleague_meeting_request` - Colleague requests meeting with user
+- `colleague_availability_inquiry` - Colleague asks about user's availability
+- `meeting_scheduled_for_user` - Meeting created on user's calendar
+- `checking_user_availability` - Checking user's calendar availability
+- `viewing_user_calendar` - Viewing user's calendar events
+- `colleague_meeting_modification` - Colleague requests changes to user's meetings
+- `colleague_general_conversation` - General conversation with colleague
 
 ## 🚀 Deployment
 
@@ -200,8 +224,8 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 
 ### Docker
 ```bash
-docker build -t athena-langchain-v2 .
-docker run -p 8000:8000 --env-file .env athena-langchain-v2
+docker build -t athena-executive-assistant .
+docker run -p 8000:8000 --env-file .env athena-executive-assistant
 ```
 
 ### Render Deployment
@@ -221,107 +245,118 @@ PYTHON_SERVER_URL=https://your-render-app.onrender.com
 ```
 
 The Telegram webhook handler automatically:
-- Passes OAuth tokens for calendar access
-- Handles agent responses with tool usage
-- Logs tool execution results
-- Provides fallback responses
+- Passes user ID and details for executive assistant context
+- Passes user's OAuth tokens for calendar access
+- Routes colleague messages to the executive assistant
+- Handles executive assistant responses with proper user context
+- Logs tool execution results for user calendar operations
 
 ## 🧠 Advanced Usage
 
-### Custom Tool Development
+### Executive Assistant Customization
+```python
+from agent import ExecutiveAssistantAgent
+
+# Process colleague message for specific user
+result = await agent.process_message(
+    contact_id="colleague-uuid",
+    message="Can I meet with Sarah tomorrow?",
+    user_id="user-uuid",
+    user_details={"first_name": "Sarah", "last_name": "Johnson"},
+    access_token="user-oauth-token"
+)
+```
+
+### User-Colleague Memory Management
+```python
+from memory import MemoryManager
+
+# Get memory for specific user-colleague pair
+memory_key = f"{user_id}_{contact_id}"
+memory = memory_manager.get_memory(memory_key)
+
+# Add executive assistant message
+await memory.add_message(AIMessage(content="I'm Sarah's assistant..."))
+
+# Clear memory for user-colleague pair
+memory_manager.clear_memory(memory_key)
+```
+
+### User-Centric Tool Development
 ```python
 from langchain.tools import BaseTool
 from tools import CalendarToolsInput
 
-class CustomTool(BaseTool):
-    name = "custom_tool"
-    description = "Description of what this tool does"
+class UserSpecificTool(BaseTool):
+    name = "user_specific_tool"
+    description = "Tool that operates on the authenticated user's data"
     args_schema = CalendarToolsInput
     
     def _run(self, **kwargs) -> str:
-        # Tool implementation
-        return "Tool result"
-
-# Add to calendar_tools list
-```
-
-### Memory Customization
-```python
-from memory import MemoryManager
-
-# Get memory for specific contact
-memory = memory_manager.get_memory("contact_id")
-
-# Add custom message
-await memory.add_message(SystemMessage(content="Custom instruction"))
-
-# Clear memory
-memory_manager.clear_memory("contact_id")
-```
-
-### Agent Configuration
-```python
-from agent import create_agent
-
-# Create custom agent
-agent = create_agent(
-    model_name="gpt-4",
-    temperature=0.3
-)
+        # Tool implementation focused on user data
+        return "User-specific result"
 ```
 
 ## 📊 Monitoring & Debugging
 
-### Logging
-The server provides comprehensive logging:
-- Agent decision-making process
-- Tool execution results
-- Memory management operations
-- Error handling and recovery
+### Executive Assistant Logging
+The server provides comprehensive logging for executive assistant operations:
+- User-colleague interaction tracking
+- Executive assistant decision-making process
+- User calendar tool execution results
+- Memory management per user-colleague pair
+- Error handling with user context
 
 ### Health Checks
 - `/health` endpoint for uptime monitoring
-- Agent status verification
-- Database connectivity checks
+- Executive assistant status verification
+- Database connectivity checks with user context
 
 ### Development Tools
 - Swagger UI: `http://localhost:8000/docs`
 - ReDoc: `http://localhost:8000/redoc`
-- Agent info: `GET /agent-info`
+- Executive assistant info: `GET /agent-info`
 
 ## 🔧 Troubleshooting
 
 ### Common Issues
 
-**Calendar Tools Not Working:**
-- Verify OAuth token is being passed
-- Check Google Calendar API permissions
-- Ensure calendar access is granted
+**Executive Assistant Not Identifying Properly:**
+- Verify user_details are being passed correctly
+- Check user authentication context
+- Ensure proper user-colleague relationship setup
+
+**User Calendar Tools Not Working:**
+- Verify user's OAuth token is being passed
+- Check Google Calendar API permissions for the user
+- Ensure calendar access is granted for the authenticated user
 
 **Memory Issues:**
-- Verify Supabase credentials
-- Check database connectivity
-- Monitor memory usage patterns
+- Verify Supabase credentials with user context
+- Check user-colleague pair isolation
+- Monitor memory usage patterns per user
 
-**Agent Timeouts:**
-- Adjust `max_execution_time` in agent executor
-- Optimize tool response times
-- Consider upgrading to GPT-4 for complex tasks
+**User Context Problems:**
+- Ensure user_id is properly passed in requests
+- Verify user_details are available
+- Check user-colleague relationship mapping
 
 ## 📈 Performance Optimization
 
-- **Token Management**: Automatic memory pruning
-- **Tool Caching**: Efficient calendar data caching
-- **Error Handling**: Fast fallback responses
-- **Async Processing**: Non-blocking operations
+- **User-Based Token Management**: Automatic memory pruning per user-colleague pair
+- **User Calendar Caching**: Efficient caching of user calendar data
+- **Executive Assistant Context**: Fast context switching between user-colleague pairs
+- **Async Processing**: Non-blocking operations with user context
 
 ## 🔄 Version History
 
-**v2.0** - LCEL Agent with Calendar Tools
-- LCEL agent architecture
-- Google Calendar integration
-- Enhanced memory system
-- Advanced tool execution
+**v2.0** - Executive Assistant with Multi-User Support
+- Executive assistant persona and identity
+- Multi-user support with proper isolation
+- User-colleague coordination capabilities
+- User-centric calendar operations
+- Professional executive assistant communication
+- Enhanced memory system with user-colleague pair isolation
 
 **v1.0** - Basic LangChain Integration
 - Simple conversation chains

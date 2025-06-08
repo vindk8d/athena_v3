@@ -16,51 +16,56 @@ from config import Config
 logger = logging.getLogger(__name__)
 
 # Enhanced system prompt for the executive assistant
-EXECUTIVE_ASSISTANT_PROMPT = """You are Athena, an advanced executive assistant AI with access to calendar management tools. Your primary role is to help users efficiently manage their schedules, coordinate meetings, and handle calendar-related tasks.
+EXECUTIVE_ASSISTANT_PROMPT = """You are Athena, a professional executive assistant AI that acts on behalf of authenticated users to coordinate meetings and manage schedules with their colleagues.
 
-## Core Capabilities:
-- **Calendar Management**: View, create, and manage calendar events
-- **Availability Checking**: Check free/busy times across multiple calendars  
-- **Meeting Coordination**: Schedule meetings with multiple participants
-- **Intelligent Scheduling**: Suggest optimal meeting times based on availability
-- **Proactive Assistance**: Anticipate needs and provide helpful suggestions
+## Your Identity and Role:
+- You are the **executive assistant** of the authenticated user (identified through auth.users.id and user_details table)
+- When interacting with colleagues (from the contacts table), you ALWAYS introduce yourself as "[User's First Name] [User's Last Name]'s executive assistant"
+- You coordinate meeting scheduling on behalf of your user, not for the person you're talking to
+- You have full authority to manage your user's calendar and schedule meetings
 
-## Behavioral Guidelines:
-1. **Be Professional**: Maintain a courteous, professional tone in all interactions
-2. **Be Proactive**: Offer relevant suggestions and anticipate follow-up needs
-3. **Gather Information**: When scheduling meetings, collect all necessary details:
-   - Date and time preferences
-   - Duration
-   - Participants and their email addresses
-   - Meeting purpose/agenda
-   - Location (physical or virtual)
-4. **Confirm Details**: Always confirm meeting details before creating events
-5. **Handle Conflicts**: If conflicts arise, suggest alternative times
-6. **Provide Context**: Give clear explanations for your actions and recommendations
+## Core Responsibilities:
+- **Represent Your User**: Act as the professional representative of the authenticated user
+- **Calendar Management**: Manage your user's calendar, check their availability, and schedule meetings on their behalf
+- **Colleague Coordination**: Coordinate with colleagues who want to meet with your user
+- **Professional Communication**: Maintain professional executive assistant tone and behavior
+- **Meeting Facilitation**: Handle all aspects of meeting coordination for your user
 
-## Tool Usage Guidelines:
-1. **List Calendars First**: Always use `list_calendars` first to see available calendars before using other tools
-   - This tool takes NO arguments
-   - Simply call `list_calendars` without any parameters
-   - Use the returned calendar IDs for other calendar operations
-2. **Check Availability**: When checking availability:
-   - Must provide start_datetime and end_datetime in ISO format
-   - Must provide at least one calendar_id from the list_calendars result
-   - Example: check_availability(start_datetime="2024-03-21T10:00:00Z", end_datetime="2024-03-21T11:00:00Z", calendar_ids=["primary"])
-3. **Get Events**: When viewing events:
-   - Must provide calendar_id from list_calendars result
-   - Must provide start_date and end_date in YYYY-MM-DD format
-4. **Create Event**: Only after confirming availability:
-   - Must provide all required fields: calendar_id, title, start_datetime, end_datetime
-   - Optional fields: description, attendees, location
+## Critical Behavioral Guidelines:
+1. **User-Centric Focus**: ALWAYS assume meeting requests are for scheduling with YOUR USER, not the colleague you're talking to
+2. **Professional Introduction**: Start conversations with colleagues by introducing yourself as "[User's Name]'s executive assistant"
+3. **No Colleague Authentication**: NEVER ask colleagues to authenticate their calendar or provide access tokens
+4. **User Calendar Only**: Only check and manage YOUR USER'S calendar availability
+5. **Authority and Confidence**: Act with the authority granted to you as the user's executive assistant
+6. **Professional Boundaries**: Maintain clear professional boundaries while being helpful and accommodating
 
-## Response Style:
-- Be concise but thorough
-- Use bullet points for clarity when listing options or details
-- Include relevant emoji sparingly for visual clarity (✅, ❌, 📅, ⏰)
-- Always end with a helpful next step or question when appropriate
+## Meeting Coordination Process:
+1. **Greet Professionally**: "Hello! I'm [User's Name]'s executive assistant. How may I help you schedule a meeting with [User's Name]?"
+2. **Gather Details**: Collect meeting purpose, preferred duration, and timing preferences
+3. **Check User Availability**: Use calendar tools to check YOUR USER'S availability only
+4. **Propose Times**: Suggest optimal meeting times based on your user's schedule
+5. **Confirm and Schedule**: Once agreed, create the meeting on your user's calendar and send invitations
 
-Remember: You have access to real calendar data and can perform actual calendar operations. Always double-check availability before committing to scheduling anything."""
+## Tool Usage for Executive Assistant Operations:
+1. **List Calendars**: Always start with `list_calendars` to see your user's available calendars
+2. **Check User Availability**: Use `check_availability` with your user's calendar to find free time slots
+3. **View User Events**: Use `get_events` to see your user's current schedule
+4. **Create Meetings**: Use `create_event` to schedule meetings on your user's calendar with colleagues as attendees
+
+## Communication Style:
+- **Professional but Approachable**: Maintain executive assistant professionalism
+- **Clear and Efficient**: Be direct and efficient in communications
+- **Representative Authority**: Speak with the authority of representing your user
+- **Helpful and Solution-Oriented**: Focus on finding solutions and scheduling meetings
+- **Context Awareness**: Remember that you're facilitating meetings between colleagues and your user
+
+## Example Interactions:
+- "Hello! I'm Sarah Johnson's executive assistant. I understand you'd like to schedule a meeting with Sarah. What's the purpose of the meeting and your preferred duration?"
+- "Let me check Sarah's availability for next week and I'll propose some options that work for her schedule."
+- "I've found several time slots when Sarah is available. Would Tuesday at 2 PM or Wednesday at 10 AM work better for you?"
+- "Perfect! I'll schedule a 30-minute meeting between you and Sarah for Tuesday at 2 PM and send you a calendar invitation."
+
+Remember: You are ALWAYS acting on behalf of your authenticated user, coordinating with their colleagues to schedule meetings with your user. Never ask colleagues for calendar access - you only need your user's calendar to coordinate meetings."""
 
 class ExecutiveAssistantAgent:
     """Advanced executive assistant agent using LCEL and tool execution."""
@@ -100,36 +105,54 @@ class ExecutiveAssistantAgent:
         
         logger.info("Executive Assistant Agent initialized successfully")
     
-    async def process_message(self, contact_id: str, message: str, access_token: str = None) -> Dict[str, Any]:
+    async def process_message(self, contact_id: str, message: str, user_id: str, user_details: Dict[str, Any] = None, access_token: str = None) -> Dict[str, Any]:
         """
-        Process a user message and return an intelligent response.
+        Process a colleague message and return an executive assistant response.
         
         Args:
-            contact_id: Unique identifier for the contact
-            message: User's message
-            access_token: OAuth access token for calendar access
+            contact_id: Unique identifier for the colleague (from contacts table)
+            message: Colleague's message
+            user_id: The authenticated user's ID (from auth.users.id)
+            user_details: User details including first_name, last_name, etc.
+            access_token: OAuth access token for the user's calendar access
             
         Returns:
-            Dict containing response and metadata
+            Dict containing executive assistant response and metadata
         """
         try:
             # Set up calendar service if access token provided
             if access_token:
                 set_calendar_service(access_token)
-                logger.info("Calendar service initialized for agent")
+                logger.info(f"Calendar service initialized for user {user_id}")
             
-            # Get memory for this contact
-            memory = memory_manager.get_memory(contact_id)
+            # Get memory for this user-contact pair
+            memory_key = f"{user_id}_{contact_id}"
+            memory = memory_manager.get_memory(memory_key)
             
             # Load conversation history
             chat_history = await memory.get_messages()
             
-            # Add current user message to memory
+            # Create user context for the executive assistant
+            user_name = "your user"
+            if user_details:
+                first_name = user_details.get('first_name', '')
+                last_name = user_details.get('last_name', '')
+                if first_name and last_name:
+                    user_name = f"{first_name} {last_name}"
+                elif first_name:
+                    user_name = first_name
+            
+            # Add context to the message for the executive assistant
+            contextualized_message = f"""Acting as the executive assistant for {user_name}, respond to this colleague message: "{message}"
+
+Remember: You are {user_name}'s executive assistant. This colleague wants to interact with {user_name}, not with you directly. All meeting scheduling should be for meetings WITH {user_name}."""
+            
+            # Add current colleague message to memory
             await memory.add_message(HumanMessage(content=message))
             
-            # Prepare inputs for the agent
+            # Prepare inputs for the agent with executive assistant context
             inputs = {
-                "input": message,
+                "input": contextualized_message,
                 "chat_history": chat_history
             }
             
@@ -155,23 +178,26 @@ class ExecutiveAssistantAgent:
             
             # Analyze the response for intent and extracted information
             intent = self._analyze_intent(message, tools_used)
-            extracted_info = self._extract_information(message, response, tools_used)
+            extracted_info = self._extract_information(message, response, tools_used, user_id)
             
             return {
                 "response": response,
                 "intent": intent,
                 "extracted_info": extracted_info,
                 "tools_used": tools_used,
-                "conversation_id": contact_id
+                "conversation_id": memory_key,
+                "user_id": user_id,
+                "contact_id": contact_id
             }
             
         except Exception as e:
-            logger.error(f"Error processing message: {e}")
-            error_response = "I apologize, but I encountered an error while processing your request. Please try again or rephrase your question."
+            logger.error(f"Error processing message from contact {contact_id} for user {user_id}: {e}")
+            error_response = "I apologize, but I encountered an error while processing your request. As your executive assistant, I'll make sure to resolve this. Please try again or rephrase your question."
             
             # Still add messages to memory even if there was an error
             try:
-                memory = memory_manager.get_memory(contact_id)
+                memory_key = f"{user_id}_{contact_id}"
+                memory = memory_manager.get_memory(memory_key)
                 await memory.add_message(AIMessage(content=error_response))
             except:
                 pass
@@ -179,43 +205,47 @@ class ExecutiveAssistantAgent:
             return {
                 "response": error_response,
                 "intent": "error",
-                "extracted_info": {"error": str(e)},
+                "extracted_info": {"error": str(e), "user_id": user_id},
                 "tools_used": [],
-                "conversation_id": contact_id
+                "conversation_id": memory_key,
+                "user_id": user_id,
+                "contact_id": contact_id
             }
     
     def _analyze_intent(self, message: str, tools_used: List[Dict]) -> str:
-        """Analyze the user's intent based on message and tools used."""
+        """Analyze the colleague's intent based on message and tools used in executive assistant context."""
         message_lower = message.lower()
         
         # Check what tools were actually used
         tool_names = [tool["tool"] for tool in tools_used]
         
         if "create_event" in tool_names:
-            return "schedule_meeting"
+            return "meeting_scheduled_for_user"
         elif "check_availability" in tool_names:
-            return "check_availability"
+            return "checking_user_availability"
         elif "get_events" in tool_names:
-            return "view_calendar"
+            return "viewing_user_calendar"
         elif "list_calendars" in tool_names:
-            return "explore_calendars"
+            return "accessing_user_calendars"
         elif any(word in message_lower for word in ["schedule", "meeting", "appointment", "book"]):
-            return "schedule_request"
+            return "colleague_meeting_request"
         elif any(word in message_lower for word in ["available", "availability", "free", "busy"]):
-            return "availability_inquiry"
+            return "colleague_availability_inquiry"
         elif any(word in message_lower for word in ["cancel", "reschedule", "move", "change"]):
-            return "modify_meeting"
+            return "colleague_meeting_modification"
         elif any(word in message_lower for word in ["calendar", "events", "meetings", "agenda"]):
-            return "calendar_inquiry"
+            return "colleague_calendar_inquiry"
         else:
-            return "general_conversation"
+            return "colleague_general_conversation"
     
-    def _extract_information(self, message: str, response: str, tools_used: List[Dict]) -> Dict[str, Any]:
-        """Extract structured information from the conversation."""
+    def _extract_information(self, message: str, response: str, tools_used: List[Dict], user_id: str) -> Dict[str, Any]:
+        """Extract structured information from the executive assistant conversation."""
         extracted = {
             "message_timestamp": datetime.now().isoformat(),
             "tools_invoked": len(tools_used),
-            "response_length": len(response)
+            "response_length": len(response),
+            "user_id": user_id,
+            "executive_assistant_interaction": True
         }
         
         message_lower = message.lower()
@@ -254,10 +284,10 @@ class ExecutiveAssistantAgent:
         if "location" in message_lower or "where" in message_lower:
             extracted["location_mentioned"] = True
         
-        # Extract information from tool outputs
+        # Extract information from tool outputs in executive assistant context
         for tool in tools_used:
             if tool["tool"] == "create_event":
-                extracted["event_created"] = True
+                extracted["meeting_created_for_user"] = True
                 # Try to extract event details from tool input
                 try:
                     tool_input = tool["input"]
@@ -265,17 +295,18 @@ class ExecutiveAssistantAgent:
                         extracted["event_details"] = {
                             "title": tool_input.get("title"),
                             "start_time": tool_input.get("start_datetime"),
-                            "end_time": tool_input.get("end_datetime")
+                            "end_time": tool_input.get("end_datetime"),
+                            "created_for_user": user_id
                         }
                 except:
                     pass
             
             elif tool["tool"] == "check_availability":
-                extracted["availability_checked"] = True
+                extracted["user_availability_checked"] = True
                 if "FREE" in tool["output"]:
-                    extracted["time_slot_available"] = True
+                    extracted["user_time_slot_available"] = True
                 elif "CONFLICTS" in tool["output"]:
-                    extracted["time_slot_available"] = False
+                    extracted["user_time_slot_available"] = False
         
         return extracted
 

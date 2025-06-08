@@ -131,7 +131,7 @@ async def process_message(request: ProcessMessageRequest):
         
         return ProcessMessageResponse(
             response=result["response"],
-            conversation_id=result["conversation_id"],
+            conversation_id=contact_id,
             user_id=result["user_id"],
             contact_id=result["contact_id"],
             intent=result.get("intent"),
@@ -147,8 +147,7 @@ async def process_message(request: ProcessMessageRequest):
 async def reset_conversation(contact_id: str):
     """Reset conversation memory for a specific contact (single-user system)."""
     try:
-        memory_key = f"user_{contact_id}"
-        memory_manager.clear_memory(memory_key)
+        memory_manager.clear_memory(contact_id)
         logger.info(f"Conversation memory cleared for contact {contact_id}")
         return {"status": "success", "message": f"Conversation memory cleared for contact {contact_id}"}
     except Exception as e:
@@ -215,8 +214,7 @@ async def simple_process_message(request: ProcessMessageRequest):
         logger.info(f"Processing simple message from colleague {contact_id} for user {user_id}: {colleague_message}")
         
         # Get memory for this contact (single-user system)
-        memory_key = f"user_{contact_id}"
-        memory = memory_manager.get_memory(memory_key)
+        memory = memory_manager.get_memory(contact_id)
         
         # Create user name for response
         user_name = "your user"
@@ -239,7 +237,7 @@ async def simple_process_message(request: ProcessMessageRequest):
         
         return ProcessMessageResponse(
             response=response,
-            conversation_id=memory_key,
+            conversation_id=contact_id,
             user_id=user_id,
             contact_id=contact_id,
             intent=intent,

@@ -20,7 +20,7 @@ EXECUTIVE_ASSISTANT_PROMPT = """You are Athena, a professional executive assista
 
 ## Your Identity and Role:
 - You are the **executive assistant** of the authenticated user in the system
-- When interacting with colleagues, you ALWAYS introduce yourself as "[User's Name]'s executive assistant"
+- When interacting with colleagues, you introduce yourself as "[User's Name]'s executive assistant" **only at the start of a new conversation or when context is unclear**
 - You coordinate meeting scheduling on behalf of your user, not for the person you're talking to
 - You have full authority to manage your user's calendar and schedule meetings
 - The system serves a single user - all contacts are colleagues of this user
@@ -34,18 +34,21 @@ EXECUTIVE_ASSISTANT_PROMPT = """You are Athena, a professional executive assista
 
 ## Critical Behavioral Guidelines:
 1. **User-Centric Focus**: ALWAYS assume meeting requests are for scheduling with YOUR USER, not the colleague you're talking to
-2. **Professional Introduction**: Start conversations with colleagues by introducing yourself as "[User's Name]'s executive assistant"
-3. **No Colleague Authentication**: NEVER ask colleagues to authenticate their calendar or provide access tokens
-4. **User Calendar Only**: Only check and manage YOUR USER'S calendar availability
-5. **Authority and Confidence**: Act with the authority granted to you as the user's executive assistant
-6. **Professional Boundaries**: Maintain clear professional boundaries while being helpful and accommodating
+2. **Professional Introduction**: Start conversations with colleagues by introducing yourself as "[User's Name]'s executive assistant" **only at the beginning of a conversation or if context is lost**
+3. **Avoid Redundancy**: Do NOT repeat your introduction or the user's name in every message. Use a natural, friendly, and non-repetitive tone.
+4. **No Colleague Authentication**: NEVER ask colleagues to authenticate their calendar or provide access tokens
+5. **User Calendar Only**: Only check and manage YOUR USER'S calendar availability
+6. **Authority and Confidence**: Act with the authority granted to you as the user's executive assistant
+7. **Professional Boundaries**: Maintain clear professional boundaries while being helpful and accommodating
+8. **Persistent Assistance**: Continue the conversation and propose next steps until the contact explicitly confirms satisfaction or declines further help. Do not stop after partial actions—always guide the conversation to completion or explicit closure.
 
 ## Meeting Coordination Process:
-1. **Greet Professionally**: "Hello! I'm [User's Name]'s executive assistant. How may I help you schedule a meeting with [User's Name]?"
+1. **Greet Professionally**: "Hello! I'm [User's Name]'s executive assistant. How may I help you schedule a meeting with [User's Name]?" (only at the start)
 2. **Gather Details**: Collect meeting purpose, preferred duration, and timing preferences
 3. **Check User Availability**: Use calendar tools to check YOUR USER'S availability only
 4. **Propose Times**: Suggest optimal meeting times based on your user's schedule
 5. **Confirm and Schedule**: Once agreed, create the meeting on your user's calendar and send invitations
+6. **Follow Up**: If awaiting a response or confirmation, politely prompt the contact for the next step
 
 ## Tool Usage for Executive Assistant Operations:
 1. **List Calendars**: Always start with `list_calendars` to see your user's available calendars
@@ -59,6 +62,7 @@ EXECUTIVE_ASSISTANT_PROMPT = """You are Athena, a professional executive assista
 - **Representative Authority**: Speak with the authority of representing your user
 - **Helpful and Solution-Oriented**: Focus on finding solutions and scheduling meetings
 - **Context Awareness**: Remember that you're facilitating meetings between colleagues and your user
+- **Natural and Friendly**: Avoid sounding robotic or repetitive. Vary your language and keep the conversation flowing naturally.
 
 ## Single-User System Context:
 - There is ONE user in the system whose calendar you manage
@@ -67,12 +71,14 @@ EXECUTIVE_ASSISTANT_PROMPT = """You are Athena, a professional executive assista
 - You act as this user's dedicated executive assistant
 
 ## Example Interactions:
-- "Hello! I'm Sarah Johnson's executive assistant. I understand you'd like to schedule a meeting with Sarah. What's the purpose of the meeting and your preferred duration?"
+- "Hello! I'm Sarah Johnson's executive assistant. I understand you'd like to schedule a meeting with Sarah. What's the purpose of the meeting and your preferred duration?" (start of conversation)
 - "Let me check Sarah's availability for next week and I'll propose some options that work for her schedule."
 - "I've found several time slots when Sarah is available. Would Tuesday at 2 PM or Wednesday at 10 AM work better for you?"
 - "Perfect! I'll schedule a 30-minute meeting between you and Sarah for Tuesday at 2 PM and send you a calendar invitation."
+- "Is there anything else I can help you with, or does this time work for you?"
 
-Remember: You are ALWAYS acting on behalf of your authenticated user, coordinating with their colleagues to schedule meetings with your user. This is a single-user system - all interactions are in the context of this one user and their colleagues."""
+Remember: You are ALWAYS acting on behalf of your authenticated user, coordinating with their colleagues to schedule meetings with your user. This is a single-user system - all interactions are in the context of this one user and their colleagues.
+"""
 
 class ExecutiveAssistantAgent:
     """Advanced executive assistant agent using LCEL and tool execution."""
@@ -118,7 +124,7 @@ class ExecutiveAssistantAgent:
         Single-user system: All contacts are colleagues of the one authenticated user.
         
         Args:
-            contact_id: Unique identifier for the colleague (from contacts table)
+            contact_id: Unique identifier for the colleague (from contacts table, UUID)
             message: Colleague's message
             user_id: The authenticated user's ID (from auth.users.id) - single user in system
             user_details: User details including name, email, etc. for the one user
@@ -133,9 +139,8 @@ class ExecutiveAssistantAgent:
                 set_calendar_service(access_token)
                 logger.info(f"Calendar service initialized for user {user_id}")
             
-            # Get memory for this contact (single-user system)
-            memory_key = f"user_{contact_id}"  # Simplified for single-user system
-            memory = memory_manager.get_memory(memory_key)
+            # Use the raw UUID contact_id for memory and DB
+            memory = memory_manager.get_memory(contact_id)
             
             # Load conversation history
             chat_history = await memory.get_messages()
@@ -151,7 +156,7 @@ class ExecutiveAssistantAgent:
                     user_name = first_name
             
             # Add context to the message for the executive assistant
-            contextualized_message = f"""Acting as the executive assistant for {user_name}, respond to this colleague message: "{message}"
+            contextualized_message = f"""Acting as the executive assistant for {user_name}, respond to this colleague message: \"{message}\"
 
 Remember: You are {user_name}'s executive assistant. This colleague wants to interact with {user_name}, not with you directly. All meeting scheduling should be for meetings WITH {user_name}."""
             
@@ -193,7 +198,7 @@ Remember: You are {user_name}'s executive assistant. This colleague wants to int
                 "intent": intent,
                 "extracted_info": extracted_info,
                 "tools_used": tools_used,
-                "conversation_id": memory_key,
+                "conversation_id": contact_id,
                 "user_id": user_id,
                 "contact_id": contact_id
             }
@@ -210,8 +215,7 @@ Remember: You are {user_name}'s executive assistant. This colleague wants to int
             
             # Still add messages to memory even if there was an error
             try:
-                memory_key = f"user_{contact_id}"  # Simplified for single-user system
-                memory = memory_manager.get_memory(memory_key)
+                memory = memory_manager.get_memory(contact_id)
                 await memory.add_message(AIMessage(content=error_response))
             except:
                 pass
@@ -221,7 +225,7 @@ Remember: You are {user_name}'s executive assistant. This colleague wants to int
                 "intent": "error",
                 "extracted_info": {"error": str(e), "user_id": user_id, "single_user_system": True},
                 "tools_used": [],
-                "conversation_id": memory_key,
+                "conversation_id": contact_id,
                 "user_id": user_id,
                 "contact_id": contact_id
             }

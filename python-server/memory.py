@@ -72,6 +72,7 @@ class EnhancedConversationMemory:
     """Enhanced conversation memory that combines buffer memory with database history."""
     
     def __init__(self, contact_id: str, max_token_limit: int = 2000):
+        # Use the raw UUID contact_id for all DB and memory operations
         self.contact_id = contact_id
         self.max_token_limit = max_token_limit
         self.db_memory = DatabaseMemory()
@@ -164,10 +165,9 @@ class MemoryManager:
         self.memories: Dict[str, EnhancedConversationMemory] = {}
     
     def get_memory(self, contact_id: str) -> EnhancedConversationMemory:
-        """Get or create memory for a contact."""
+        """Get or create memory for a contact (by UUID)."""
         if contact_id not in self.memories:
             self.memories[contact_id] = EnhancedConversationMemory(contact_id)
-        
         return self.memories[contact_id]
     
     async def add_user_message(self, contact_id: str, content: str) -> None:
@@ -181,7 +181,7 @@ class MemoryManager:
         await memory.add_message(AIMessage(content=content))
     
     def clear_memory(self, contact_id: str) -> None:
-        """Clear memory for a specific contact."""
+        """Clear memory for a specific contact (by UUID)."""
         if contact_id in self.memories:
             self.memories[contact_id].clear()
     

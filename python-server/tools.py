@@ -242,10 +242,10 @@ class ListCalendarsTool(BaseTool):
     """Tool to list all calendars for the authenticated user."""
     
     name = "list_calendars"
-    description = "List all calendars for the user. Use this to see available calendars before checking events or availability."
+    description = "List all calendars for the user. Use this to see available calendars before checking events or availability. No arguments needed."
     args_schema = ListCalendarsInput
     
-    def _run(self) -> str:
+    def _run(self, *args, **kwargs) -> str:
         """List all calendars for the authenticated user."""
         try:
             calendar_service = get_calendar_service()

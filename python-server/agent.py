@@ -15,14 +15,15 @@ from config import Config
 
 logger = logging.getLogger(__name__)
 
-# Enhanced system prompt for the executive assistant
-EXECUTIVE_ASSISTANT_PROMPT = """You are Athena, a professional executive assistant AI that acts on behalf of authenticated users to coordinate meetings and manage schedules with their colleagues.
+# Enhanced system prompt for the single-user executive assistant
+EXECUTIVE_ASSISTANT_PROMPT = """You are Athena, a professional executive assistant AI that acts on behalf of your authenticated user to coordinate meetings and manage schedules with their colleagues.
 
 ## Your Identity and Role:
-- You are the **executive assistant** of the authenticated user (identified through auth.users.id and user_details table)
-- When interacting with colleagues (from the contacts table), you ALWAYS introduce yourself as "[User's First Name] [User's Last Name]'s executive assistant"
+- You are the **executive assistant** of the authenticated user in the system
+- When interacting with colleagues, you ALWAYS introduce yourself as "[User's Name]'s executive assistant"
 - You coordinate meeting scheduling on behalf of your user, not for the person you're talking to
 - You have full authority to manage your user's calendar and schedule meetings
+- The system serves a single user - all contacts are colleagues of this user
 
 ## Core Responsibilities:
 - **Represent Your User**: Act as the professional representative of the authenticated user
@@ -59,13 +60,19 @@ EXECUTIVE_ASSISTANT_PROMPT = """You are Athena, a professional executive assista
 - **Helpful and Solution-Oriented**: Focus on finding solutions and scheduling meetings
 - **Context Awareness**: Remember that you're facilitating meetings between colleagues and your user
 
+## Single-User System Context:
+- There is ONE user in the system whose calendar you manage
+- ALL contacts are colleagues of this user
+- ALL meeting requests are for meetings WITH your user
+- You act as this user's dedicated executive assistant
+
 ## Example Interactions:
 - "Hello! I'm Sarah Johnson's executive assistant. I understand you'd like to schedule a meeting with Sarah. What's the purpose of the meeting and your preferred duration?"
 - "Let me check Sarah's availability for next week and I'll propose some options that work for her schedule."
 - "I've found several time slots when Sarah is available. Would Tuesday at 2 PM or Wednesday at 10 AM work better for you?"
 - "Perfect! I'll schedule a 30-minute meeting between you and Sarah for Tuesday at 2 PM and send you a calendar invitation."
 
-Remember: You are ALWAYS acting on behalf of your authenticated user, coordinating with their colleagues to schedule meetings with your user. Never ask colleagues for calendar access - you only need your user's calendar to coordinate meetings."""
+Remember: You are ALWAYS acting on behalf of your authenticated user, coordinating with their colleagues to schedule meetings with your user. This is a single-user system - all interactions are in the context of this one user and their colleagues."""
 
 class ExecutiveAssistantAgent:
     """Advanced executive assistant agent using LCEL and tool execution."""
@@ -108,12 +115,13 @@ class ExecutiveAssistantAgent:
     async def process_message(self, contact_id: str, message: str, user_id: str, user_details: Dict[str, Any] = None, access_token: str = None) -> Dict[str, Any]:
         """
         Process a colleague message and return an executive assistant response.
+        Single-user system: All contacts are colleagues of the one authenticated user.
         
         Args:
             contact_id: Unique identifier for the colleague (from contacts table)
             message: Colleague's message
-            user_id: The authenticated user's ID (from auth.users.id)
-            user_details: User details including first_name, last_name, etc.
+            user_id: The authenticated user's ID (from auth.users.id) - single user in system
+            user_details: User details including name, email, etc. for the one user
             access_token: OAuth access token for the user's calendar access
             
         Returns:
@@ -125,8 +133,8 @@ class ExecutiveAssistantAgent:
                 set_calendar_service(access_token)
                 logger.info(f"Calendar service initialized for user {user_id}")
             
-            # Get memory for this user-contact pair
-            memory_key = f"{user_id}_{contact_id}"
+            # Get memory for this contact (single-user system)
+            memory_key = f"user_{contact_id}"  # Simplified for single-user system
             memory = memory_manager.get_memory(memory_key)
             
             # Load conversation history
@@ -192,11 +200,17 @@ Remember: You are {user_name}'s executive assistant. This colleague wants to int
             
         except Exception as e:
             logger.error(f"Error processing message from contact {contact_id} for user {user_id}: {e}")
-            error_response = "I apologize, but I encountered an error while processing your request. As your executive assistant, I'll make sure to resolve this. Please try again or rephrase your question."
+            
+            # Get user name for error response
+            user_name = "your user"
+            if user_details and user_details.get('name'):
+                user_name = user_details['name']
+            
+            error_response = f"I apologize, but I encountered an error while processing your request. As {user_name}'s executive assistant, I'll make sure to resolve this. Please try again or rephrase your question."
             
             # Still add messages to memory even if there was an error
             try:
-                memory_key = f"{user_id}_{contact_id}"
+                memory_key = f"user_{contact_id}"  # Simplified for single-user system
                 memory = memory_manager.get_memory(memory_key)
                 await memory.add_message(AIMessage(content=error_response))
             except:
@@ -205,7 +219,7 @@ Remember: You are {user_name}'s executive assistant. This colleague wants to int
             return {
                 "response": error_response,
                 "intent": "error",
-                "extracted_info": {"error": str(e), "user_id": user_id},
+                "extracted_info": {"error": str(e), "user_id": user_id, "single_user_system": True},
                 "tools_used": [],
                 "conversation_id": memory_key,
                 "user_id": user_id,

@@ -1,12 +1,12 @@
 # Athena Executive Assistant Server v2.0
 
-This is the Python FastAPI server that powers Athena, an AI executive assistant that acts on behalf of authenticated users to coordinate meetings and manage schedules with their colleagues using LangChain with LCEL (LangChain Expression Language), agent executors, and Google Calendar integration.
+This is the Python FastAPI server that powers Athena, an AI executive assistant that acts on behalf of a single authenticated user to coordinate meetings and manage schedules with their colleagues using LangChain with LCEL (LangChain Expression Language), agent executors, and Google Calendar integration.
 
 ## 🆕 Version 2.0 Features
 
-- **Executive Assistant Persona**: AI that acts as the professional representative of authenticated users
-- **Multi-User Support**: Supports multiple executives with their own colleague networks
-- **User-Colleague Coordination**: Coordinates with colleagues on behalf of the authenticated user
+- **Executive Assistant Persona**: AI that acts as the professional representative of one authenticated user
+- **Single-User Focus**: Optimized to serve one executive with their colleague network
+- **User-Colleague Coordination**: Coordinates with colleagues on behalf of the single authenticated user
 - **LCEL Agent Architecture**: Modern LangChain agent using OpenAI Functions optimized for executive assistant tasks
 - **User-Centric Calendar Management**: All calendar operations focused on the authenticated user's schedule
 - **Professional Communication**: Always introduces itself as "[User's Name]'s executive assistant"
@@ -188,17 +188,17 @@ python-server/
 - **Colleague Coordination**: Coordinates with colleagues who want to meet with the user
 - **No Colleague Authentication**: Never asks colleagues to authenticate their calendars
 
-### Multi-User Support
-- **User Isolation**: Proper data separation between different users
-- **User-Colleague Relationships**: Manages contacts per authenticated user
-- **Calendar Privacy**: Only accesses the authenticated user's calendar
+### Single-User Architecture
+- **Focused Design**: Optimized for single-user performance and reliability
+- **Colleague Management**: All contacts are colleagues of the one authenticated user
+- **Calendar Privacy**: Only accesses the single authenticated user's calendar
 - **Professional Boundaries**: Clear separation between user and colleague permissions
 
 ### Memory Features
-- **User-Colleague Pair Isolation**: Separate conversation histories per user-colleague relationship
-- **Database Integration**: Loads conversation history with user context
-- **Cross-session Persistence**: Conversations survive server restarts with user context
-- **Token Optimization**: Automatic memory pruning per user-colleague pair
+- **Contact-Based Isolation**: Separate conversation histories per colleague
+- **Database Integration**: Loads conversation history with single-user context
+- **Cross-session Persistence**: Conversations survive server restarts
+- **Token Optimization**: Automatic memory pruning per contact
 
 ### User Calendar Integration
 - **OAuth Support**: Secure Google Calendar access for authenticated users only

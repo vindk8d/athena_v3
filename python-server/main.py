@@ -60,12 +60,12 @@ async def startup_event():
     logger.info(f"OpenAI API Key configured: {'Yes' if Config.OPENAI_API_KEY else 'No'}")
     logger.info(f"Model: {Config.LLM_MODEL}")
     logger.info(f"Temperature: {Config.LLM_TEMPERATURE}")
-    logger.info("Agent Mode: Executive Assistant (acts on behalf of authenticated users)")
+    logger.info("Agent Mode: Single-User Executive Assistant (serves one user and their colleagues)")
     
     # Initialize the executive assistant agent
     try:
         agent = get_agent()
-        logger.info("Executive Assistant Agent initialized successfully")
+        logger.info("Single-User Executive Assistant Agent initialized successfully")
     except Exception as e:
         logger.error(f"Failed to initialize executive assistant agent: {e}")
         raise
@@ -75,16 +75,17 @@ async def root():
     return {
         "message": "Athena Executive Assistant Server v2.0 is running",
         "version": "2.0.0",
-        "agent_type": "Executive Assistant",
-        "description": "AI assistant that acts on behalf of authenticated users to coordinate with colleagues",
+        "agent_type": "Single-User Executive Assistant",
+        "description": "AI assistant that acts on behalf of one authenticated user to coordinate with their colleagues",
         "features": [
             "Executive Assistant Persona",
-            "Multi-User Support",
-            "User-Colleague Coordination", 
+            "Single-User Focus",
+            "Colleague Coordination", 
             "Professional Meeting Scheduling",
             "User Calendar Management",
             "Google Calendar API Integration",
-            "Enhanced Memory Management per User-Contact Pair"
+            "Enhanced Memory Management per Contact",
+            "Simplified Single-User Architecture"
         ]
     }
 
@@ -142,14 +143,14 @@ async def process_message(request: ProcessMessageRequest):
         logger.error(f"Error processing message: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error processing message: {str(e)}")
 
-@app.post("/reset-conversation/{user_id}/{contact_id}")
-async def reset_conversation(user_id: str, contact_id: str):
-    """Reset conversation memory for a specific user-contact pair."""
+@app.post("/reset-conversation/{contact_id}")
+async def reset_conversation(contact_id: str):
+    """Reset conversation memory for a specific contact (single-user system)."""
     try:
-        memory_key = f"{user_id}_{contact_id}"
+        memory_key = f"user_{contact_id}"
         memory_manager.clear_memory(memory_key)
-        logger.info(f"Conversation memory cleared for user {user_id} and contact {contact_id}")
-        return {"status": "success", "message": f"Conversation memory cleared for user {user_id} and contact {contact_id}"}
+        logger.info(f"Conversation memory cleared for contact {contact_id}")
+        return {"status": "success", "message": f"Conversation memory cleared for contact {contact_id}"}
     except Exception as e:
         logger.error(f"Error resetting conversation: {e}")
         raise HTTPException(status_code=500, detail=f"Error resetting conversation: {str(e)}")
@@ -167,14 +168,15 @@ async def reset_agent_endpoint():
 
 @app.get("/agent-info")
 async def agent_info():
-    """Get information about the executive assistant agent configuration."""
+    """Get information about the single-user executive assistant agent configuration."""
     try:
         agent = get_agent()
         return {
             "model": Config.LLM_MODEL,
             "temperature": Config.LLM_TEMPERATURE,
-            "agent_type": "executive_assistant",
-            "persona": "Professional executive assistant acting on behalf of authenticated users",
+            "agent_type": "single_user_executive_assistant",
+            "persona": "Professional executive assistant acting on behalf of one authenticated user",
+            "system_type": "single_user",
             "tools_available": [
                 "list_calendars",
                 "get_events", 
@@ -182,13 +184,15 @@ async def agent_info():
                 "create_event"
             ],
             "capabilities": [
-                "User calendar management",
+                "Single user calendar management",
                 "Colleague coordination",
                 "Professional meeting scheduling",
-                "Executive representation"
+                "Executive representation",
+                "Simplified architecture"
             ],
-            "memory_management": "user_contact_pair_isolation",
-            "multi_user_support": True
+            "memory_management": "per_contact_isolation",
+            "multi_user_support": False,
+            "description": "Serves one user and coordinates with their colleagues"
         }
     except Exception as e:
         logger.error(f"Error getting agent info: {e}")
@@ -210,8 +214,8 @@ async def simple_process_message(request: ProcessMessageRequest):
         
         logger.info(f"Processing simple message from colleague {contact_id} for user {user_id}: {colleague_message}")
         
-        # Get memory for this user-contact pair
-        memory_key = f"{user_id}_{contact_id}"
+        # Get memory for this contact (single-user system)
+        memory_key = f"user_{contact_id}"
         memory = memory_manager.get_memory(memory_key)
         
         # Create user name for response

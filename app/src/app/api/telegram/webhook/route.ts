@@ -74,9 +74,42 @@ export async function POST(request: Request) {
       const messageDate = message.date ? new Date(message.date * 1000).toISOString() : new Date().toISOString()
 
       let contactId = null
+      let userDetails = null
+      let userId = null
+
       // Always initialize supabase client
       const supabase = await createClient()
+      
       try {
+        // First, get the single user details (there should only be one user in the system)
+        const { data: userDetailsData, error: userError } = await supabase
+          .from('user_details')
+          .select('*')
+          .limit(1)
+          .maybeSingle()
+
+        if (userError) {
+          console.warn('Error getting user details:', userError.message)
+          await bot.sendMessage(chatId, "I'm sorry, but the system isn't properly configured yet. Please contact your administrator.")
+          return new Response(JSON.stringify({ status: 'ok' }), {
+            status: 200,
+            headers: RESPONSE_HEADERS
+          })
+        }
+
+        if (!userDetailsData) {
+          console.warn('No user found in user_details table')
+          await bot.sendMessage(chatId, "Hello! The system hasn't been set up yet. Please contact your administrator to configure the executive assistant.")
+          return new Response(JSON.stringify({ status: 'ok' }), {
+            status: 200,
+            headers: RESPONSE_HEADERS
+          })
+        }
+
+        userDetails = userDetailsData
+        userId = userDetailsData.user_id
+        console.log(`Acting as executive assistant for user: ${userDetails.name}`)
+
         if (telegramUserId) {
           // Look up contact by telegram_id
           const { data: contactData, error: contactError } = await supabase
@@ -84,12 +117,13 @@ export async function POST(request: Request) {
             .select('id')
             .eq('telegram_id', telegramUserId)
             .maybeSingle()
+
           if (contactError) {
             console.warn('Error looking up contact:', contactError.message)
           } else if (contactData) {
             contactId = contactData.id
           } else {
-            // No contact found, insert new contact
+            // No contact found, insert new contact associated with the user
             const now = new Date().toISOString()
             const newContact = {
               telegram_id: telegramUserId,
@@ -98,6 +132,7 @@ export async function POST(request: Request) {
               username: message.from?.username || null,
               language_code: message.from?.language_code || null,
               name: [message.from?.first_name, message.from?.last_name].filter(Boolean).join(' ') || message.from?.username || 'Unknown',
+              user_contact_id: userDetails.id, // Link contact to the user via user_contact_id
               created_at: now,
               updated_at: now
             }
@@ -110,12 +145,12 @@ export async function POST(request: Request) {
               console.warn('Failed to insert new contact:', insertError.message)
             } else if (inserted) {
               contactId = inserted.id
-              console.log('Inserted new contact for telegram_id', telegramUserId)
+              console.log(`Inserted new contact for telegram_id ${telegramUserId}, associated with user ${userDetails.name}`)
             }
           }
         }
       } catch (err) {
-        console.warn('Supabase error during contact lookup/insert:', err)
+        console.warn('Supabase error during user/contact lookup:', err)
       }
 
       // Log incoming message if contact found
@@ -143,35 +178,28 @@ export async function POST(request: Request) {
       }
 
       try {
-        // Send message to Python LangChain server for processing
-        let response = 'Hello! I received your message.'
+        // Send message to Python Executive Assistant server for processing
+        let response = `Hello! I'm ${userDetails?.name || "your executive"}'s assistant. How may I help you?`
         
-        if (contactId && messageText) {
+        if (contactId && messageText && userDetails && userId) {
           try {
             const pythonServerUrl = process.env.PYTHON_SERVER_URL || 'http://localhost:8000'
             
-            // Get OAuth token for calendar access
+            // Get OAuth token for user's calendar access
             let oauthToken = null
             try {
               const { data: { session } } = await supabase.auth.getSession()
               if (session?.provider_token) {
                 oauthToken = session.provider_token
-                console.log('OAuth token found for calendar access')
+                console.log('OAuth token found for user calendar access')
               } else {
                 console.log('No OAuth token available for calendar access')
-                response = "I notice you haven't connected your Google Calendar yet. To use calendar features, please:\n\n1. Visit the web interface at https://athena-v3-rwuk.onrender.com\n2. Sign in with your Google account\n3. Grant calendar access permissions\n\nOnce you've done that, I'll be able to help you manage your calendar!"
-                return new Response(JSON.stringify({ status: 'ok' }), {
-                  status: 200,
-                  headers: RESPONSE_HEADERS
-                })
+                response = `Hello! I'm ${userDetails.name}'s executive assistant. I notice the calendar isn't connected yet. To enable full scheduling capabilities, please:\n\n1. Visit the web interface at https://athena-v3-rwuk.onrender.com\n2. Sign in with Google account\n3. Grant calendar access permissions\n\nFor now, I can still help with general scheduling coordination!`
+                // Continue processing even without calendar access for basic assistant functions
               }
             } catch (tokenError) {
               console.warn('Error getting OAuth token:', tokenError)
-              response = "I'm having trouble accessing your calendar. Please make sure you've signed in and granted calendar access permissions."
-              return new Response(JSON.stringify({ status: 'ok' }), {
-                status: 200,
-                headers: RESPONSE_HEADERS
-              })
+              oauthToken = null // Continue without calendar access
             }
             
             const langchainResponse = await fetch(`${pythonServerUrl}/process-message`, {
@@ -189,64 +217,92 @@ export async function POST(request: Request) {
                   user_info: message.from
                 },
                 contact_id: contactId,
+                user_id: userId, // The authenticated user's ID
+                user_details: { // User details for executive assistant context
+                  first_name: userDetails.name?.split(' ')[0] || userDetails.name,
+                  last_name: userDetails.name?.split(' ').slice(1).join(' ') || '',
+                  name: userDetails.name,
+                  email: userDetails.email,
+                  working_hours_start: userDetails.working_hours_start,
+                  working_hours_end: userDetails.working_hours_end,
+                  meeting_duration: userDetails.meeting_duration,
+                  buffer_time: userDetails.buffer_time
+                },
                 conversation_history: [],
                 oauth_access_token: oauthToken,
-                oauth_refresh_token: null // Could be added later if needed
+                oauth_refresh_token: null
               })
             })
 
             if (langchainResponse.ok) {
               const langchainData = await langchainResponse.json()
               response = langchainData.response
-              console.log('LangChain response received:', {
+              console.log('Executive assistant response received:', {
                 intent: langchainData.intent,
                 extracted_info: langchainData.extracted_info,
                 tools_used: langchainData.tools_used?.map((tool: any) => tool.tool) || []
               })
             } else {
-              console.warn('LangChain server error:', langchainResponse.status)
+              console.warn('Executive assistant server error:', langchainResponse.status)
               const errorText = await langchainResponse.text()
               console.warn('Error details:', errorText)
-              response = "I'm experiencing some technical difficulties. Please try again later."
+              response = `Hello! I'm ${userDetails.name}'s executive assistant. I'm experiencing some technical difficulties right now. Please try again in a moment, or let me know how I can help you coordinate with ${userDetails.name}.`
             }
           } catch (fetchError) {
-            console.warn('Failed to connect to LangChain server:', fetchError)
-            // Fallback to simple responses if LangChain server is unavailable
+            console.warn('Failed to connect to Executive Assistant server:', fetchError)
+            // Fallback to executive assistant responses if server is unavailable
+            const userName = userDetails.name || "your executive"
             if (messageText) {
               const text = messageText.toLowerCase()
-              if (text.includes('/start')) {
-                response = `Welcome! 🤖 I'm your Executive Assistant Bot. 
+              if (text.includes('/start') || text.includes('hello') || text.includes('hi')) {
+                response = `Hello! I'm ${userName}'s executive assistant. I can help you:
 
-I can help you with:
-• /schedule - Schedule meetings
-• /meetings - View upcoming meetings  
-• /help - Show available commands
+• Schedule meetings with ${userName}
+• Check ${userName}'s availability
+• Coordinate meeting details
+• Manage ${userName}'s calendar
 
-What would you like to do?`
+How may I assist you in coordinating with ${userName} today?`
               } else if (text.includes('/help')) {
-                response = `Available commands:
-/start - Get started
-/schedule - Schedule a new meeting
-/meetings - View your meetings
-/cancel - Cancel a meeting
-/settings - Manage preferences
+                response = `I'm ${userName}'s executive assistant. Here's how I can help:
 
-How can I assist you today?`
-              } else if (text.includes('hello') || text.includes('hi')) {
-                response = 'Hello! How can I help you today? Use /help to see what I can do.'
+📅 **Meeting Coordination**
+• Schedule meetings with ${userName}
+• Check availability
+• Propose meeting times
+• Send calendar invitations
+
+💬 **Communication**
+• Relay messages to ${userName}
+• Coordinate meeting details
+• Handle scheduling requests
+
+Just tell me what meeting you'd like to schedule with ${userName}, and I'll take care of it!`
+              } else if (text.includes('schedule') || text.includes('meeting') || text.includes('meet')) {
+                response = `I'd be happy to help you schedule a meeting with ${userName}! 
+
+To get started, please let me know:
+• What's the purpose of the meeting?
+• How long do you need (30 mins, 1 hour, etc.)?
+• Any preferred dates or times?
+
+I'll check ${userName}'s availability and propose suitable times.`
               } else {
-                response = `I received: "${messageText}"\n\nI'm still learning! Use /help to see what I can do.`
+                response = `Hello! I'm ${userName}'s executive assistant. I received your message: "${messageText}"
+
+I can help you schedule meetings with ${userName}. Just let me know what you need, and I'll coordinate everything!`
               }
             }
           }
         } else {
-          // Fallback response for messages without contact or text
-          response = "I'm sorry, I couldn't process your message. Please try again."
+          // Fallback response when user details aren't available
+          response = "Hello! I'm an executive assistant, but I'm having trouble accessing the system configuration. Please try again or contact support."
         }
 
         await bot.sendMessage(chatId, response)
         console.log('Response sent successfully to chat:', chatId)
-        // Log outgoing bot response if contact found
+        
+        // Log outgoing assistant response if contact found
         if (contactId) {
           try {
             const { error: logBotMsgError } = await supabase
@@ -257,20 +313,20 @@ How can I assist you today?`
                 channel: 'telegram',
                 content: response,
                 status: 'delivered',
-                metadata: { chatId, response },
+                metadata: { chatId, response, acting_for_user: userDetails?.name },
                 created_at: new Date().toISOString()
               })
             if (logBotMsgError) {
-              console.warn('Failed to log outgoing bot message:', logBotMsgError.message)
+              console.warn('Failed to log outgoing assistant message:', logBotMsgError.message)
             } else {
-              console.log('Outgoing bot message logged to messages table')
+              console.log('Outgoing assistant message logged to messages table')
             }
           } catch (err) {
-            console.warn('Error logging outgoing bot message:', err)
+            console.warn('Error logging outgoing assistant message:', err)
           }
         }
       } catch (botError) {
-        console.error('Error sending bot response:', botError)
+        console.error('Error sending assistant response:', botError)
         // Don't fail the webhook if bot response fails
       }
     }

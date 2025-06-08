@@ -1,56 +1,64 @@
-from typing import List, Dict, Any, Optional, Tuple
-from langchain.tools import BaseTool
-from pydantic import BaseModel, Field
-from datetime import datetime, timedelta
-import json
-import logging
-from google.oauth2.credentials import Credentials
-from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
-import pytz
+# Import necessary modules and types
+from typing import List, Dict, Any, Optional, Tuple  # Import types for type hinting
+from langchain.tools import BaseTool  # Import BaseTool for creating custom tools
+from pydantic import BaseModel, Field  # Import for creating data models and fields
+from datetime import datetime, timedelta  # Import for date and time operations
+import json  # Import for JSON operations (not used in this snippet)
+import logging  # Import for logging functionality
+from google.oauth2.credentials import Credentials  # Import for handling OAuth credentials
+from googleapiclient.discovery import build  # Import for building Google API client
+from googleapiclient.errors import HttpError  # Import for handling Google API errors
+import pytz  # Import for timezone operations
 
-logger = logging.getLogger(__name__)
+# Set up logging
+logger = logging.getLogger(__name__)  # Create a logger instance for this module
 
+# Define base input model for calendar tools
 class CalendarToolsInput(BaseModel):
     """Base input model for calendar tools."""
-    pass
+    pass  # This is an empty base class for other input models to inherit from
 
+# Define input model for listing calendars
 class ListCalendarsInput(CalendarToolsInput):
     """Input for listing calendars."""
-    pass
+    pass  # No additional fields needed for listing calendars
 
+# Define input model for getting calendar events
 class GetEventsInput(CalendarToolsInput):
     """Input for getting calendar events."""
-    calendar_id: str = Field(description="The calendar ID to get events from")
-    start_date: str = Field(description="Start date in ISO format (YYYY-MM-DD)")
-    end_date: str = Field(description="End date in ISO format (YYYY-MM-DD)")
-    timezone: str = Field(default="UTC", description="Timezone for the events")
+    calendar_id: str = Field(description="The calendar ID to get events from")  # Field for calendar ID
+    start_date: str = Field(description="Start date in ISO format (YYYY-MM-DD)")  # Field for start date
+    end_date: str = Field(description="End date in ISO format (YYYY-MM-DD)")  # Field for end date
+    timezone: str = Field(default="UTC", description="Timezone for the events")  # Field for timezone, default is UTC
 
+# Define input model for checking availability
 class CheckAvailabilityInput(CalendarToolsInput):
     """Input for checking availability."""
-    start_datetime: str = Field(description="Start datetime in ISO format")
-    end_datetime: str = Field(description="End datetime in ISO format")
-    calendar_ids: List[str] = Field(description="List of calendar IDs to check")
-    timezone: str = Field(default="UTC", description="Timezone for availability check")
+    start_datetime: str = Field(description="Start datetime in ISO format")  # Field for start datetime
+    end_datetime: str = Field(description="End datetime in ISO format")  # Field for end datetime
+    calendar_ids: List[str] = Field(description="List of calendar IDs to check")  # Field for list of calendar IDs
+    timezone: str = Field(default="UTC", description="Timezone for availability check")  # Field for timezone, default is UTC
 
+# Define input model for creating a calendar event
 class CreateEventInput(CalendarToolsInput):
     """Input for creating a calendar event."""
-    calendar_id: str = Field(description="The calendar ID to create the event in")
-    title: str = Field(description="Event title")
-    description: str = Field(default="", description="Event description")
-    start_datetime: str = Field(description="Start datetime in ISO format")
-    end_datetime: str = Field(description="End datetime in ISO format")
-    timezone: str = Field(default="UTC", description="Timezone for the event")
-    attendees: List[str] = Field(default=[], description="List of attendee email addresses")
-    location: str = Field(default="", description="Event location")
+    calendar_id: str = Field(description="The calendar ID to create the event in")  # Field for calendar ID
+    title: str = Field(description="Event title")  # Field for event title
+    description: str = Field(default="", description="Event description")  # Field for event description, default is empty string
+    start_datetime: str = Field(description="Start datetime in ISO format")  # Field for start datetime
+    end_datetime: str = Field(description="End datetime in ISO format")  # Field for end datetime
+    timezone: str = Field(default="UTC", description="Timezone for the event")  # Field for timezone, default is UTC
+    attendees: List[str] = Field(default=[], description="List of attendee email addresses")  # Field for attendees, default is empty list
+    location: str = Field(default="", description="Event location")  # Field for event location, default is empty string
 
+# Define CalendarService class for interacting with Google Calendar API
 class CalendarService:
     """Google Calendar API service wrapper."""
     
     def __init__(self, access_token: str, refresh_token: str = None):
         """Initialize calendar service with OAuth tokens."""
         try:
-            # Create credentials object
+            # Create credentials object using the provided tokens
             self.credentials = Credentials(
                 token=access_token,
                 refresh_token=refresh_token,
@@ -59,20 +67,22 @@ class CalendarService:
                 client_secret=None,  # Will be set if needed
             )
             
-            # Build the calendar service
+            # Build the calendar service using the credentials
             self.service = build('calendar', 'v3', credentials=self.credentials)
-            logger.info("Calendar service initialized successfully")
+            logger.info("Calendar service initialized successfully")  # Log successful initialization
             
         except Exception as e:
-            logger.error(f"Error initializing calendar service: {e}")
-            raise
+            logger.error(f"Error initializing calendar service: {e}")  # Log any errors during initialization
+            raise  # Re-raise the exception
     
     def list_calendars(self) -> List[Dict[str, Any]]:
         """List all calendars for the authenticated user."""
         try:
+            # Fetch the list of calendars from the Google Calendar API
             calendar_list = self.service.calendarList().list().execute()
             calendars = []
             
+            # Process each calendar item and extract relevant information
             for calendar_item in calendar_list.get('items', []):
                 calendars.append({
                     'id': calendar_item['id'],
@@ -83,13 +93,13 @@ class CalendarService:
                     'access_role': calendar_item.get('accessRole', 'reader')
                 })
             
-            return calendars
+            return calendars  # Return the list of processed calendars
             
         except HttpError as e:
-            logger.error(f"HTTP error listing calendars: {e}")
+            logger.error(f"HTTP error listing calendars: {e}")  # Log HTTP errors
             raise
         except Exception as e:
-            logger.error(f"Error listing calendars: {e}")
+            logger.error(f"Error listing calendars: {e}")  # Log general errors
             raise
     
     def get_events(self, calendar_id: str, start_date: str, end_date: str, timezone: str = "UTC") -> List[Dict[str, Any]]:
@@ -99,6 +109,7 @@ class CalendarService:
             start_time = f"{start_date}T00:00:00.000000Z"
             end_time = f"{end_date}T23:59:59.999999Z"
             
+            # Fetch events from the Google Calendar API
             events_result = self.service.events().list(
                 calendarId=calendar_id,
                 timeMin=start_time,
@@ -109,6 +120,7 @@ class CalendarService:
             ).execute()
             
             events = []
+            # Process each event and extract relevant information
             for event in events_result.get('items', []):
                 # Parse start and end times
                 start = event.get('start', {})
@@ -126,27 +138,29 @@ class CalendarService:
                     'html_link': event.get('htmlLink', '')
                 })
             
-            return events
+            return events  # Return the list of processed events
             
         except HttpError as e:
-            logger.error(f"HTTP error getting events: {e}")
+            logger.error(f"HTTP error getting events: {e}")  # Log HTTP errors
             raise
         except Exception as e:
-            logger.error(f"Error getting events: {e}")
+            logger.error(f"Error getting events: {e}")  # Log general errors
             raise
     
     def check_availability(self, start_datetime: str, end_datetime: str, calendar_ids: List[str]) -> Dict[str, Any]:
         """Check availability across multiple calendars."""
         try:
-            # Use freebusy query to check availability
+            # Prepare the request body for the freebusy query
             body = {
                 'timeMin': start_datetime,
                 'timeMax': end_datetime,
                 'items': [{'id': cal_id} for cal_id in calendar_ids]
             }
             
+            # Execute the freebusy query
             freebusy_result = self.service.freebusy().query(body=body).execute()
             
+            # Initialize the availability dictionary
             availability = {
                 'time_period': {
                     'start': start_datetime,
@@ -157,6 +171,7 @@ class CalendarService:
                 'conflicts': []
             }
             
+            # Process the freebusy result for each calendar
             for calendar_id in calendar_ids:
                 calendar_busy = freebusy_result.get('calendars', {}).get(calendar_id, {})
                 busy_times = calendar_busy.get('busy', [])
@@ -170,13 +185,13 @@ class CalendarService:
                     availability['is_free'] = False
                     availability['conflicts'].extend(busy_times)
             
-            return availability
+            return availability  # Return the processed availability information
             
         except HttpError as e:
-            logger.error(f"HTTP error checking availability: {e}")
+            logger.error(f"HTTP error checking availability: {e}")  # Log HTTP errors
             raise
         except Exception as e:
-            logger.error(f"Error checking availability: {e}")
+            logger.error(f"Error checking availability: {e}")  # Log general errors
             raise
     
     def create_event(self, calendar_id: str, title: str, description: str, 
@@ -184,6 +199,7 @@ class CalendarService:
                     attendees: List[str] = None, location: str = "") -> Dict[str, Any]:
         """Create a new calendar event."""
         try:
+            # Prepare the event body
             event_body = {
                 'summary': title,
                 'description': description,
@@ -198,14 +214,17 @@ class CalendarService:
                 'location': location,
             }
             
+            # Add attendees if provided
             if attendees:
                 event_body['attendees'] = [{'email': email} for email in attendees]
             
+            # Insert the event into the calendar
             event = self.service.events().insert(
                 calendarId=calendar_id,
                 body=event_body
             ).execute()
             
+            # Return relevant information about the created event
             return {
                 'id': event['id'],
                 'summary': event.get('summary'),
@@ -216,10 +235,10 @@ class CalendarService:
             }
             
         except HttpError as e:
-            logger.error(f"HTTP error creating event: {e}")
+            logger.error(f"HTTP error creating event: {e}")  # Log HTTP errors
             raise
         except Exception as e:
-            logger.error(f"Error creating event: {e}")
+            logger.error(f"Error creating event: {e}")  # Log general errors
             raise
 
 # Global calendar service instance (will be set when processing requests)
@@ -358,4 +377,4 @@ calendar_tools = [
     GetEventsTool(),
     CheckAvailabilityTool(),
     CreateEventTool()
-] 
+]

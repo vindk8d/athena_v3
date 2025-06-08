@@ -159,9 +159,19 @@ export async function POST(request: Request) {
                 console.log('OAuth token found for calendar access')
               } else {
                 console.log('No OAuth token available for calendar access')
+                response = "I notice you haven't connected your Google Calendar yet. To use calendar features, please:\n\n1. Visit the web interface at https://athena-v3-rwuk.onrender.com\n2. Sign in with your Google account\n3. Grant calendar access permissions\n\nOnce you've done that, I'll be able to help you manage your calendar!"
+                return new Response(JSON.stringify({ status: 'ok' }), {
+                  status: 200,
+                  headers: RESPONSE_HEADERS
+                })
               }
             } catch (tokenError) {
               console.warn('Error getting OAuth token:', tokenError)
+              response = "I'm having trouble accessing your calendar. Please make sure you've signed in and granted calendar access permissions."
+              return new Response(JSON.stringify({ status: 'ok' }), {
+                status: 200,
+                headers: RESPONSE_HEADERS
+              })
             }
             
             const langchainResponse = await fetch(`${pythonServerUrl}/process-message`, {

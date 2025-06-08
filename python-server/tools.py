@@ -245,19 +245,29 @@ class ListCalendarsTool(BaseTool):
     description = "List all calendars for the user. Use this to see available calendars before checking events or availability."
     args_schema = ListCalendarsInput
     
-    def _run(self, **kwargs) -> str:
-        """Execute the tool."""
+    def _run(self) -> str:
+        """List all calendars for the authenticated user."""
         try:
-            service = get_calendar_service()
-            calendars = service.list_calendars()
+            calendar_service = get_calendar_service()
+            calendars = calendar_service.list_calendars()
             
-            result = "Available calendars:\n"
+            if not calendars:
+                return "No calendars found."
+            
+            # Format the response
+            calendar_list = []
             for cal in calendars:
-                result += f"- {cal['summary']} (ID: {cal['id']}) - {cal.get('access_role', 'reader')}\n"
+                calendar_list.append(
+                    f"• {cal['summary']} ({cal['id']})\n"
+                    f"  - Timezone: {cal['timezone']}\n"
+                    f"  - Access: {cal['access_role']}\n"
+                    f"  - Primary: {'Yes' if cal['primary'] else 'No'}"
+                )
             
-            return result
+            return "Available calendars:\n" + "\n\n".join(calendar_list)
             
         except Exception as e:
+            logger.error(f"Error listing calendars: {e}")
             return f"Error listing calendars: {str(e)}"
 
 class GetEventsTool(BaseTool):

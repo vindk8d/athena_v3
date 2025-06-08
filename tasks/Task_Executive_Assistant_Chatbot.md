@@ -57,12 +57,12 @@
   - Implement message parsing and routing
   - Add basic command processing (/start, /help)
 
-- [ ] **Task 1.3.3**: Create user management system
+- [x] **Task 1.3.3**: Create user management system
   - Implement user registration and profile management
   - Connect Telegram users to database contacts
-  - Handle user preferences and settings
+  - (Handling of user preferences and settings skipped for later)
 
-- [ ] **Task 1.3.4**: Implement message logging and persistence
+- [x] **Task 1.3.4**: Implement message logging and persistence
   - Create message storage system in database
   - Implement conversation history tracking
   - Add message status tracking (sent, delivered, read)

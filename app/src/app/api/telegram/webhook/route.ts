@@ -69,6 +69,78 @@ export async function POST(request: Request) {
     if (update.message) {
       const { message } = update
       const chatId = message.chat.id
+      const telegramUserId = message.from?.id?.toString() || null
+      const messageText = message.text || ''
+      const messageDate = message.date ? new Date(message.date * 1000).toISOString() : new Date().toISOString()
+
+      let contactId = null
+      // Always initialize supabase client
+      const supabase = await createClient()
+      try {
+        if (telegramUserId) {
+          // Look up contact by telegram_id
+          const { data: contactData, error: contactError } = await supabase
+            .from('contacts')
+            .select('id')
+            .eq('telegram_id', telegramUserId)
+            .maybeSingle()
+          if (contactError) {
+            console.warn('Error looking up contact:', contactError.message)
+          } else if (contactData) {
+            contactId = contactData.id
+          } else {
+            // No contact found, insert new contact
+            const now = new Date().toISOString()
+            const newContact = {
+              telegram_id: telegramUserId,
+              first_name: message.from?.first_name || null,
+              last_name: message.from?.last_name || null,
+              username: message.from?.username || null,
+              language_code: message.from?.language_code || null,
+              name: [message.from?.first_name, message.from?.last_name].filter(Boolean).join(' ') || message.from?.username || 'Unknown',
+              created_at: now,
+              updated_at: now
+            }
+            const { data: inserted, error: insertError } = await supabase
+              .from('contacts')
+              .insert(newContact)
+              .select('id')
+              .maybeSingle()
+            if (insertError) {
+              console.warn('Failed to insert new contact:', insertError.message)
+            } else if (inserted) {
+              contactId = inserted.id
+              console.log('Inserted new contact for telegram_id', telegramUserId)
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('Supabase error during contact lookup/insert:', err)
+      }
+
+      // Log incoming message if contact found
+      if (contactId) {
+        try {
+          const { error: logMsgError } = await supabase
+            .from('messages')
+            .insert({
+              contact_id: contactId,
+              sender: 'user',
+              channel: 'telegram',
+              content: messageText,
+              status: 'sent',
+              metadata: message,
+              created_at: messageDate
+            })
+          if (logMsgError) {
+            console.warn('Failed to log incoming message:', logMsgError.message)
+          } else {
+            console.log('Incoming message logged to messages table')
+          }
+        } catch (err) {
+          console.warn('Error logging incoming message:', err)
+        }
+      }
 
       try {
         // Send a response based on the message content
@@ -103,6 +175,29 @@ How can I assist you today?`
 
         await bot.sendMessage(chatId, response)
         console.log('Response sent successfully to chat:', chatId)
+        // Log outgoing bot response if contact found
+        if (contactId) {
+          try {
+            const { error: logBotMsgError } = await supabase
+              .from('messages')
+              .insert({
+                contact_id: contactId,
+                sender: 'bot',
+                channel: 'telegram',
+                content: response,
+                status: 'delivered',
+                metadata: { chatId, response },
+                created_at: new Date().toISOString()
+              })
+            if (logBotMsgError) {
+              console.warn('Failed to log outgoing bot message:', logBotMsgError.message)
+            } else {
+              console.log('Outgoing bot message logged to messages table')
+            }
+          } catch (err) {
+            console.warn('Error logging outgoing bot message:', err)
+          }
+        }
       } catch (botError) {
         console.error('Error sending bot response:', botError)
         // Don't fail the webhook if bot response fails

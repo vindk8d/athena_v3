@@ -143,13 +143,69 @@ export async function POST(request: Request) {
       }
 
       try {
-        // Send a response based on the message content
+        // Send message to Python LangChain server for processing
         let response = 'Hello! I received your message.'
         
-        if (message.text) {
-          const text = message.text.toLowerCase()
-          if (text.includes('/start')) {
-            response = `Welcome! 🤖 I'm your Executive Assistant Bot. 
+        if (contactId && messageText) {
+          try {
+            const pythonServerUrl = process.env.PYTHON_SERVER_URL || 'http://localhost:8000'
+            
+            // Get OAuth token for calendar access
+            let oauthToken = null
+            try {
+              const { data: { session } } = await supabase.auth.getSession()
+              if (session?.provider_token) {
+                oauthToken = session.provider_token
+                console.log('OAuth token found for calendar access')
+              } else {
+                console.log('No OAuth token available for calendar access')
+              }
+            } catch (tokenError) {
+              console.warn('Error getting OAuth token:', tokenError)
+            }
+            
+            const langchainResponse = await fetch(`${pythonServerUrl}/process-message`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                telegram_message: {
+                  message_id: message.message_id,
+                  chat_id: chatId,
+                  user_id: telegramUserId ? parseInt(telegramUserId) : 0,
+                  text: messageText,
+                  timestamp: messageDate,
+                  user_info: message.from
+                },
+                contact_id: contactId,
+                conversation_history: [],
+                oauth_access_token: oauthToken,
+                oauth_refresh_token: null // Could be added later if needed
+              })
+            })
+
+            if (langchainResponse.ok) {
+              const langchainData = await langchainResponse.json()
+              response = langchainData.response
+              console.log('LangChain response received:', {
+                intent: langchainData.intent,
+                extracted_info: langchainData.extracted_info,
+                tools_used: langchainData.tools_used?.map((tool: any) => tool.tool) || []
+              })
+            } else {
+              console.warn('LangChain server error:', langchainResponse.status)
+              const errorText = await langchainResponse.text()
+              console.warn('Error details:', errorText)
+              response = "I'm experiencing some technical difficulties. Please try again later."
+            }
+          } catch (fetchError) {
+            console.warn('Failed to connect to LangChain server:', fetchError)
+            // Fallback to simple responses if LangChain server is unavailable
+            if (messageText) {
+              const text = messageText.toLowerCase()
+              if (text.includes('/start')) {
+                response = `Welcome! 🤖 I'm your Executive Assistant Bot. 
 
 I can help you with:
 • /schedule - Schedule meetings
@@ -157,8 +213,8 @@ I can help you with:
 • /help - Show available commands
 
 What would you like to do?`
-          } else if (text.includes('/help')) {
-            response = `Available commands:
+              } else if (text.includes('/help')) {
+                response = `Available commands:
 /start - Get started
 /schedule - Schedule a new meeting
 /meetings - View your meetings
@@ -166,11 +222,16 @@ What would you like to do?`
 /settings - Manage preferences
 
 How can I assist you today?`
-          } else if (text.includes('hello') || text.includes('hi')) {
-            response = 'Hello! How can I help you today? Use /help to see what I can do.'
-          } else {
-            response = `I received: "${message.text}"\n\nI'm still learning! Use /help to see what I can do.`
+              } else if (text.includes('hello') || text.includes('hi')) {
+                response = 'Hello! How can I help you today? Use /help to see what I can do.'
+              } else {
+                response = `I received: "${messageText}"\n\nI'm still learning! Use /help to see what I can do.`
+              }
+            }
           }
+        } else {
+          // Fallback response for messages without contact or text
+          response = "I'm sorry, I couldn't process your message. Please try again."
         }
 
         await bot.sendMessage(chatId, response)

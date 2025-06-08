@@ -130,7 +130,7 @@ class ExecutiveAssistantAgent:
             intermediate_steps = result.get("intermediate_steps", [])
             
             # Add AI response to memory
-            await memory.add_ai_message(contact_id, response)
+            await memory.add_message(AIMessage(content=response))
             
             # Extract tool usage information
             tools_used = []
@@ -162,7 +162,7 @@ class ExecutiveAssistantAgent:
             # Still add messages to memory even if there was an error
             try:
                 memory = memory_manager.get_memory(contact_id)
-                await memory.add_ai_message(contact_id, error_response)
+                await memory.add_message(AIMessage(content=error_response))
             except:
                 pass
             

@@ -243,7 +243,7 @@ How can I assist you today?`
               .from('messages')
               .insert({
                 contact_id: contactId,
-                sender: 'bot',
+                sender: 'assistant',
                 channel: 'telegram',
                 content: response,
                 status: 'delivered',

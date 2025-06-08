@@ -18,7 +18,15 @@ class DatabaseMemory:
             logger.warning("Supabase credentials not found. Database memory will be disabled.")
             self.supabase = None
         else:
-            self.supabase: Client = create_client(self.supabase_url, self.supabase_key)
+            try:
+                self.supabase: Client = create_client(
+                    supabase_url=self.supabase_url,
+                    supabase_key=self.supabase_key
+                )
+                logger.info("Supabase client initialized successfully")
+            except Exception as e:
+                logger.error(f"Failed to initialize Supabase client: {e}")
+                self.supabase = None
     
     async def get_recent_messages(self, contact_id: str, limit: int = 5) -> List[Dict[str, Any]]:
         """Retrieve the last N messages for a contact from the database."""

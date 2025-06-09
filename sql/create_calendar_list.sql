@@ -28,9 +28,17 @@ COMMENT ON COLUMN calendar_list.calendar_id IS 'Provider-specific calendar ident
 COMMENT ON COLUMN calendar_list.to_include_in_check IS 'Whether this calendar should be included in availability checks';
 COMMENT ON COLUMN calendar_list.metadata IS 'Additional provider-specific calendar information';
 
--- Add RLS policy for multi-user security (optional, for future multi-user support)
+-- Add RLS policy for multi-user security
 ALTER TABLE calendar_list ENABLE ROW LEVEL SECURITY;
+
+-- Drop existing policies if they exist
+DROP POLICY IF EXISTS "Users can manage their own calendars" ON calendar_list;
+DROP POLICY IF EXISTS "Service role can manage all calendars" ON calendar_list;
 
 -- Policy: Users can only access their own calendars
 CREATE POLICY "Users can manage their own calendars" ON calendar_list
-    FOR ALL USING (auth.uid() = user_id); 
+    FOR ALL USING (auth.uid() = user_id);
+
+-- Policy: Service role can manage all calendars
+CREATE POLICY "Service role can manage all calendars" ON calendar_list
+    FOR ALL USING (auth.role() = 'service_role'); 

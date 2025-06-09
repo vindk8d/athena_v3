@@ -39,6 +39,23 @@ export async function GET(request: Request) {
         // Calculate token expiration (typically 1 hour for Google)
         const expiresAt = new Date(Date.now() + 3600 * 1000) // 1 hour from now
         
+        // Ensure user_details entry exists
+        const { error: userDetailsError } = await supabase
+          .from('user_details')
+          .upsert({
+            user_id: user.id,
+            name: user.user_metadata?.full_name || user.email || 'User',
+            email: user.email,
+            updated_at: new Date().toISOString(),
+            created_at: new Date().toISOString()
+          }, {
+            onConflict: 'user_id'
+          })
+        
+        if (userDetailsError) {
+          console.error('Error creating/updating user details:', userDetailsError.message)
+        }
+        
         if (accessToken) {
           // Store or update OAuth tokens in user_auth_credentials table
           const { error: upsertError } = await supabase
@@ -66,7 +83,9 @@ export async function GET(request: Request) {
         console.error('Error processing OAuth tokens:', tokenError)
       }
       
-      return NextResponse.redirect(new URL('/', requestUrl.origin))
+      // Use the production frontend URL for consistent redirection
+      const redirectUrl = new URL('/', 'https://athena-v3-rwuk.onrender.com')
+      return NextResponse.redirect(redirectUrl)
     }
   }
 

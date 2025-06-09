@@ -11,47 +11,71 @@ from googleapiclient.errors import HttpError  # Import for handling Google API e
 import pytz  # Import for timezone operations
 import os  # Import for environment variables
 from google.auth.transport.requests import Request  # Import for refreshing access tokens
+from supabase import create_client, Client  # Import for database operations
 
 # Set up logging
 logger = logging.getLogger(__name__)  # Create a logger instance for this module
+
+# Initialize Supabase client for database operations
+def get_supabase_client():
+    """Get Supabase client for database operations."""
+    supabase_url = os.getenv("NEXT_PUBLIC_SUPABASE_URL")
+    supabase_key = os.getenv("NEXT_PUBLIC_SUPABASE_ANON_KEY")
+    
+    if not supabase_url or not supabase_key:
+        logger.error("Supabase credentials not found in environment variables")
+        return None
+    
+    return create_client(supabase_url, supabase_key)
+
+def get_included_calendars(user_id: str) -> List[str]:
+    """Get list of calendar IDs that should be included in availability checks."""
+    try:
+        supabase = get_supabase_client()
+        if not supabase:
+            logger.error("Could not initialize Supabase client")
+            return []
+        
+        response = supabase.table('calendar_list').select('calendar_id').eq('user_id', user_id).eq('calendar_type', 'google').eq('to_include_in_check', True).execute()
+        
+        if response.data:
+            calendar_ids = [item['calendar_id'] for item in response.data]
+            logger.info(f"Found {len(calendar_ids)} included calendars for user {user_id}")
+            return calendar_ids
+        else:
+            logger.warning(f"No included calendars found for user {user_id}")
+            return []
+    except Exception as e:
+        logger.error(f"Error fetching included calendars: {e}")
+        return []
 
 # Define base input model for calendar tools
 class CalendarToolsInput(BaseModel):
     """Base input model for calendar tools."""
     pass  # This is an empty base class for other input models to inherit from
 
-# Define input model for listing calendars
-class ListCalendarsInput(CalendarToolsInput):
-    """Input for listing calendars."""
-    pass  # No additional fields needed for listing calendars
-
-# Define input model for getting calendar events
-class GetEventsInput(CalendarToolsInput):
-    """Input for getting calendar events."""
-    calendar_id: str = Field(description="The calendar ID to get events from")  # Field for calendar ID
-    start_date: str = Field(description="Start date in ISO format (YYYY-MM-DD)")  # Field for start date
-    end_date: str = Field(description="End date in ISO format (YYYY-MM-DD)")  # Field for end date
-    timezone: str = Field(default="UTC", description="Timezone for the events")  # Field for timezone, default is UTC
-
 # Define input model for checking availability
-class CheckAvailabilityInput(CalendarToolsInput):
-    """Input for checking availability."""
-    start_datetime: str = Field(description="Start datetime in ISO format")  # Field for start datetime
-    end_datetime: str = Field(description="End datetime in ISO format")  # Field for end datetime
-    calendar_ids: List[str] = Field(description="List of calendar IDs to check")  # Field for list of calendar IDs
-    timezone: str = Field(default="UTC", description="Timezone for availability check")  # Field for timezone, default is UTC
+class CheckAvailabilityInput(BaseModel):
+    """Input model for checking calendar availability."""
+    start_datetime: str = Field(description="Start datetime in ISO format with timezone (e.g., '2024-01-15T09:00:00+08:00')")
+    end_datetime: str = Field(description="End datetime in ISO format with timezone (e.g., '2024-01-15T10:00:00+08:00')")
+    duration_minutes: Optional[int] = Field(default=30, description="Meeting duration in minutes for context")
 
-# Define input model for creating a calendar event
-class CreateEventInput(CalendarToolsInput):
-    """Input for creating a calendar event."""
-    calendar_id: str = Field(description="The calendar ID to create the event in")  # Field for calendar ID
-    title: str = Field(description="Event title")  # Field for event title
-    description: str = Field(default="", description="Event description")  # Field for event description, default is empty string
-    start_datetime: str = Field(description="Start datetime in ISO format")  # Field for start datetime
-    end_datetime: str = Field(description="End datetime in ISO format")  # Field for end datetime
-    timezone: str = Field(default="UTC", description="Timezone for the event")  # Field for timezone, default is UTC
-    attendees: List[str] = Field(default=[], description="List of attendee email addresses")  # Field for attendees, default is empty list
-    location: str = Field(default="", description="Event location")  # Field for event location, default is empty string
+# Define input model for getting events
+class GetEventsInput(BaseModel):
+    """Input model for getting calendar events."""
+    start_datetime: str = Field(description="Start datetime in ISO format with timezone")
+    end_datetime: str = Field(description="End datetime in ISO format with timezone")
+
+# Define input model for creating events
+class CreateEventInput(BaseModel):
+    """Input model for creating calendar events."""
+    title: str = Field(description="Event title/subject")
+    start_datetime: str = Field(description="Start datetime in ISO format with timezone")
+    end_datetime: str = Field(description="End datetime in ISO format with timezone")
+    attendee_emails: Optional[List[str]] = Field(default=[], description="List of attendee email addresses")
+    description: Optional[str] = Field(default="", description="Event description")
+    location: Optional[str] = Field(default="", description="Event location")
 
 # Define CalendarService class for interacting with Google Calendar API
 class CalendarService:
@@ -260,19 +284,31 @@ class CalendarService:
             logger.error(f"Error creating event: {e}")  # Log general errors
             raise
 
-# Global calendar service instance (will be set when processing requests)
+# Global calendar service instance and user context (will be set when processing requests)
 _calendar_service: Optional[CalendarService] = None
+_current_user_id: Optional[str] = None
 
 def set_calendar_service(access_token: str, refresh_token: str = None):
     """Set the global calendar service instance."""
     global _calendar_service
     _calendar_service = CalendarService(access_token, refresh_token)
 
+def set_current_user_id(user_id: str):
+    """Set the current user ID for tool context."""
+    global _current_user_id
+    _current_user_id = user_id
+
 def get_calendar_service() -> CalendarService:
     """Get the global calendar service instance."""
     if _calendar_service is None:
         raise ValueError("Calendar service not initialized. Call set_calendar_service first.")
     return _calendar_service
+
+def get_current_user_id() -> str:
+    """Get the current user ID."""
+    if _current_user_id is None:
+        raise ValueError("User ID not set. Call set_current_user_id first.")
+    return _current_user_id
 
 # LangChain Tools
 
@@ -281,7 +317,7 @@ class ListCalendarsTool(BaseTool):
     
     name = "list_calendars"
     description = "List all calendars for the user. Use this to see available calendars before checking events or availability. No arguments needed."
-    args_schema = ListCalendarsInput
+    args_schema = CalendarToolsInput
     
     def _run(self, *args, **kwargs) -> str:
         """List all calendars for the authenticated user."""
@@ -309,23 +345,43 @@ class ListCalendarsTool(BaseTool):
             return f"Error listing calendars: {str(e)}"
 
 class GetEventsTool(BaseTool):
-    """Tool to get events from a specific calendar."""
+    """Tool to get events from user's calendars for a date range."""
     
     name = "get_events"
-    description = "Get events from a specific calendar for a date range. Useful for checking what meetings are scheduled."
+    description = "Get events from the user's calendars for a date range. Useful for checking what meetings are scheduled."
     args_schema = GetEventsInput
     
-    def _run(self, calendar_id: str, start_date: str, end_date: str, timezone: str = "UTC") -> str:
+    def _run(self, start_datetime: str, end_datetime: str) -> str:
         """Execute the tool."""
         try:
+            user_id = get_current_user_id()
+            calendar_ids = get_included_calendars(user_id)
+            
+            if not calendar_ids:
+                return "No calendars configured for checking events. Please configure calendars in the web interface."
+            
             service = get_calendar_service()
-            events = service.get_events(calendar_id, start_date, end_date, timezone)
+            all_events = []
             
-            if not events:
-                return f"No events found in calendar {calendar_id} from {start_date} to {end_date}"
+            # Get events from all included calendars
+            for calendar_id in calendar_ids:
+                try:
+                    # Convert datetime to date for the API call
+                    start_date = start_datetime.split('T')[0]
+                    end_date = end_datetime.split('T')[0]
+                    events = service.get_events(calendar_id, start_date, end_date)
+                    all_events.extend(events)
+                except Exception as e:
+                    logger.warning(f"Error getting events from calendar {calendar_id}: {e}")
             
-            result = f"Events in calendar {calendar_id} from {start_date} to {end_date}:\n"
-            for event in events:
+            if not all_events:
+                return f"No events found from {start_datetime} to {end_datetime}"
+            
+            # Sort events by start time
+            all_events.sort(key=lambda x: x['start'])
+            
+            result = f"Events from {start_datetime} to {end_datetime}:\n"
+            for event in all_events:
                 result += f"- {event['summary']} ({event['start']} - {event['end']})\n"
                 if event['location']:
                     result += f"  Location: {event['location']}\n"
@@ -335,23 +391,30 @@ class GetEventsTool(BaseTool):
             return result
             
         except Exception as e:
+            logger.error(f"Error getting events: {e}")
             return f"Error getting events: {str(e)}"
 
 class CheckAvailabilityTool(BaseTool):
-    """Tool to check availability across multiple calendars."""
+    """Tool to check availability across user's configured calendars."""
     
     name = "check_availability"
-    description = "Check if a time slot is free across multiple calendars. Use this before scheduling meetings."
+    description = "Check if a time slot is free across the user's configured calendars. Requires start_datetime and end_datetime in ISO format with timezone."
     args_schema = CheckAvailabilityInput
     
-    def _run(self, start_datetime: str, end_datetime: str, calendar_ids: List[str], timezone: str = "UTC") -> str:
+    def _run(self, start_datetime: str, end_datetime: str, duration_minutes: int = 30) -> str:
         """Execute the tool."""
         try:
+            user_id = get_current_user_id()
+            calendar_ids = get_included_calendars(user_id)
+            
+            if not calendar_ids:
+                return "No calendars configured for availability checking. Please configure calendars in the web interface."
+            
             service = get_calendar_service()
             availability = service.check_availability(start_datetime, end_datetime, calendar_ids)
             
             if availability['is_free']:
-                return f"✅ Time slot {start_datetime} to {end_datetime} is FREE across all calendars"
+                return f"✅ Time slot {start_datetime} to {end_datetime} is FREE across all configured calendars"
             else:
                 result = f"❌ Time slot {start_datetime} to {end_datetime} has CONFLICTS:\n"
                 for conflict in availability['conflicts']:
@@ -359,40 +422,63 @@ class CheckAvailabilityTool(BaseTool):
                 return result
             
         except Exception as e:
+            logger.error(f"Error checking availability: {e}")
             return f"Error checking availability: {str(e)}"
 
 class CreateEventTool(BaseTool):
-    """Tool to create a new calendar event."""
+    """Tool to create a new calendar event on the user's primary calendar."""
     
     name = "create_event"
-    description = "Create a new calendar event. Use this to schedule meetings after confirming availability."
+    description = "Create a new calendar event on the user's primary calendar. Use this to schedule meetings after confirming availability."
     args_schema = CreateEventInput
     
-    def _run(self, calendar_id: str, title: str, description: str, start_datetime: str, 
-            end_datetime: str, timezone: str = "UTC", attendees: List[str] = None, location: str = "") -> str:
+    def _run(self, title: str, start_datetime: str, end_datetime: str, 
+            attendee_emails: List[str] = None, description: str = "", location: str = "") -> str:
         """Execute the tool."""
         try:
+            user_id = get_current_user_id()
+            calendar_ids = get_included_calendars(user_id)
+            
+            if not calendar_ids:
+                return "No calendars configured for creating events. Please configure calendars in the web interface."
+            
+            # Use the first configured calendar (usually primary) for creating events
+            primary_calendar = calendar_ids[0]
+            
             service = get_calendar_service()
+            
+            # Extract timezone from start_datetime
+            timezone = "UTC"
+            if '+' in start_datetime:
+                timezone_offset = start_datetime.split('+')[1]
+                timezone = f"UTC+{timezone_offset}"
+            elif 'T' in start_datetime and start_datetime.endswith('Z'):
+                timezone = "UTC"
+            
             event = service.create_event(
-                calendar_id, title, description, start_datetime, 
-                end_datetime, timezone, attendees or [], location
+                primary_calendar, title, description, start_datetime, 
+                end_datetime, timezone, attendee_emails or [], location
             )
             
-            result = f"✅ Event created successfully!\n"
+            result = f"✅ Meeting scheduled successfully on your calendar!\n"
             result += f"Title: {event['summary']}\n"
             result += f"Time: {event['start']} to {event['end']}\n"
             result += f"Event ID: {event['id']}\n"
+            if attendee_emails:
+                result += f"Attendees: {', '.join(attendee_emails)}\n"
+            if location:
+                result += f"Location: {location}\n"
             if event.get('html_link'):
                 result += f"Calendar link: {event['html_link']}\n"
             
             return result
             
         except Exception as e:
+            logger.error(f"Error creating event: {e}")
             return f"Error creating event: {str(e)}"
 
-# Tool instances for use in agent
+# Tool instances for use in agent (removed ListCalendarsTool as it's no longer needed)
 calendar_tools = [
-    ListCalendarsTool(),
     GetEventsTool(),
     CheckAvailabilityTool(),
     CreateEventTool()

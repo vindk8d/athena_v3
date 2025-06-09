@@ -8,6 +8,7 @@ import logging
 from config import Config
 from agent import get_agent, reset_agent
 from memory import memory_manager
+from tools import set_current_user_id
 
 # Load environment variables
 load_dotenv()
@@ -44,6 +45,8 @@ class ProcessMessageRequest(BaseModel):
     # OAuth token for the user's calendar access (optional)
     oauth_access_token: Optional[str] = None
     oauth_refresh_token: Optional[str] = None
+    oauth_token_expires_at: Optional[str] = None
+    oauth_metadata: Optional[Dict[str, Any]] = None
 
 class ProcessMessageResponse(BaseModel):
     response: str
@@ -112,6 +115,16 @@ async def process_message(request: ProcessMessageRequest):
         colleague_message = telegram_msg.text
         
         logger.info(f"Processing message from colleague {contact_id} for user {user_id}: {colleague_message}")
+        
+        # Set up calendar service if access token provided
+        if request.oauth_access_token:
+            from tools import set_calendar_service
+            set_calendar_service(request.oauth_access_token, request.oauth_refresh_token)
+            logger.info(f"Calendar service initialized for user {user_id}")
+        
+        # Set the current user ID for tool context
+        set_current_user_id(user_id)
+        logger.info(f"User context set for tools: {user_id}")
         
         # Get the agent
         agent = get_agent()

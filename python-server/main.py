@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import os
 from dotenv import load_dotenv
@@ -20,6 +21,15 @@ logger = logging.getLogger(__name__)
 
 # Initialize FastAPI app
 app = FastAPI(title="Athena Executive Assistant Server", version="2.0.0")
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allow all origins during development
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all methods
+    allow_headers=["*"],  # Allows all headers
+)
 
 # Validate configuration on startup
 try:
@@ -278,9 +288,45 @@ async def sync_calendars(request: Request):
         calendars = calendar_service.list_calendars()
         if not calendars:
             return {"success": False, "error": "No calendars found"}
+
+        # First, ensure user details exist with default working hours
+        try:
+            # Check if user details exist
+            user_response = supabase.table('user_details').select('*').eq('user_id', user_id).maybeSingle().execute()
+            
+            if not user_response.data:
+                # Create user details with default working hours
+                default_user = {
+                    'user_id': user_id,
+                    'working_hours_start': '09:00:00',
+                    'working_hours_end': '17:00:00',
+                    'meeting_duration': 30,
+                    'buffer_time': 15,
+                    'timezone': 'UTC',
+                    'created_at': datetime.utcnow().isoformat(),
+                    'updated_at': datetime.utcnow().isoformat()
+                }
+                supabase.table('user_details').insert(default_user).execute()
+                logger.info(f"Created user details with default working hours for user {user_id}")
+            elif not user_response.data.get('working_hours_start'):
+                # Update existing user with default working hours if missing
+                supabase.table('user_details').update({
+                    'working_hours_start': '09:00:00',
+                    'working_hours_end': '17:00:00',
+                    'meeting_duration': 30,
+                    'buffer_time': 15,
+                    'timezone': 'UTC',
+                    'updated_at': datetime.utcnow().isoformat()
+                }).eq('user_id', user_id).execute()
+                logger.info(f"Updated user details with default working hours for user {user_id}")
+        except Exception as e:
+            logger.error(f"Error managing user details: {e}")
+            return {"success": False, "error": f"Error managing user details: {str(e)}"}
+
         # Fetch existing calendars
         response = supabase.table('calendar_list').select('*').eq('user_id', user_id).eq('calendar_type', 'google').execute()
         existing = {c['calendar_id']: c for c in (response.data or [])}
+        
         # Prepare upserts
         upserts = []
         for cal in calendars:
@@ -296,9 +342,11 @@ async def sync_calendars(request: Request):
                 "metadata": {},
                 "updated_at": datetime.utcnow().isoformat()
             })
+        
         supabase.table('calendar_list').upsert(upserts, on_conflict=['user_id', 'calendar_id', 'calendar_type']).execute()
         return {"success": True}
     except Exception as e:
+        logger.error(f"Error syncing calendars: {e}")
         return {"success": False, "error": str(e)}
 
 @app.get("/get-calendars")

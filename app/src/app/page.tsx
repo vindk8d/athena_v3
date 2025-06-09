@@ -153,7 +153,7 @@ export default function Home() {
           </p>
           
           {/* Calendar Connection Status */}
-          <div className="p-6 rounded-lg border border-gray-200 bg-white shadow-sm">
+          <div className="p-6 rounded-lg border border-gray-200 bg-white dark:bg-neutral-900 dark:text-white shadow-sm">
             <h2 className="text-xl font-semibold mb-4">Calendar Connection Status</h2>
             <div className="flex items-center justify-center space-x-2 mb-4">
               <div className={`w-3 h-3 rounded-full ${calendarConnected ? 'bg-green-500' : 'bg-red-500'}`}></div>
@@ -173,9 +173,9 @@ export default function Home() {
 
           {/* Calendar Management */}
           {calendarConnected && (
-            <div className="p-6 rounded-lg border border-gray-200 bg-white shadow-sm">
+            <div className="p-6 rounded-lg border border-gray-200 bg-white dark:bg-neutral-900 dark:text-white shadow-sm">
               <div className="flex justify-between items-center mb-4">
-                <h2 className="text-xl font-semibold">Calendar Management</h2>
+                <h2 className="text-xl font-semibold text-black dark:text-white">Calendar Management</h2>
                 <div className="flex space-x-2">
                   <button
                     onClick={handleRefreshCalendars}
@@ -189,32 +189,32 @@ export default function Home() {
               
               {syncMessage && (
                 <div className={`mb-4 p-3 rounded text-sm ${
-                  syncMessage.includes('successfully') ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'
+                  syncMessage.includes('successfully') ? 'bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-200' : 'bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-200'
                 }`}>
                   {syncMessage}
                 </div>
               )}
               
-              <p className="text-sm text-gray-600 mb-4">
+              <p className="text-sm text-black dark:text-white mb-4">
                 Select which calendars to include when checking your availability:
               </p>
               
               {calendars.length === 0 ? (
-                <div className="text-gray-500 text-center py-4">
+                <div className="text-black dark:text-white text-center py-4">
                   No calendars found. Click "Refresh Calendars" to sync from Google.
                 </div>
               ) : (
                 <div className="space-y-3">
                   {calendars.map((calendar) => (
-                    <div key={calendar.calendar_id} className="flex items-center justify-between p-3 border rounded hover:bg-gray-50">
+                    <div key={calendar.calendar_id} className="flex items-center justify-between p-3 border rounded bg-white dark:bg-neutral-900 hover:bg-gray-50 dark:hover:bg-neutral-800">
                       <div className="flex-1">
                         <div className="flex items-center space-x-2">
-                          <span className="font-medium">{calendar.calendar_name}</span>
+                          <span className="font-medium text-black dark:text-white">{calendar.calendar_name}</span>
                           {calendar.is_primary && (
-                            <span className="bg-blue-100 text-blue-800 text-xs px-2 py-1 rounded">Primary</span>
+                            <span className="bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200 text-xs px-2 py-1 rounded">Primary</span>
                           )}
                         </div>
-                        <div className="text-sm text-gray-500">
+                        <div className="text-sm text-black dark:text-white">
                           {calendar.access_role} • {calendar.timezone}
                         </div>
                       </div>
@@ -226,13 +226,13 @@ export default function Home() {
                           className="sr-only"
                         />
                         <div className={`relative w-11 h-6 transition-colors duration-200 ease-in-out rounded-full ${
-                          calendar.to_include_in_check ? 'bg-blue-600' : 'bg-gray-300'
+                          calendar.to_include_in_check ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-700'
                         }`}>
-                          <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full transition-transform duration-200 ease-in-out ${
+                          <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white dark:bg-neutral-900 rounded-full transition-transform duration-200 ease-in-out ${
                             calendar.to_include_in_check ? 'transform translate-x-5' : ''
                           }`} />
                         </div>
-                        <span className="ml-2 text-sm text-gray-700">
+                        <span className="ml-2 text-sm text-black dark:text-white">
                           {calendar.to_include_in_check ? 'Included' : 'Excluded'}
                         </span>
                       </label>

@@ -394,6 +394,21 @@ class GetEventsTool(BaseTool):
             logger.error(f"Error getting events: {e}")
             return f"Error getting events: {str(e)}"
 
+def calculate_end_datetime(start_datetime: str, duration_minutes: int) -> str:
+    """Calculate end datetime from start datetime and duration in minutes."""
+    try:
+        # Parse the start datetime
+        start_dt = datetime.fromisoformat(start_datetime.replace('Z', '+00:00'))
+        
+        # Calculate end datetime
+        end_dt = start_dt + timedelta(minutes=duration_minutes)
+        
+        # Format back to ISO format with timezone
+        return end_dt.isoformat()
+    except Exception as e:
+        logger.error(f"Error calculating end datetime: {e}")
+        raise
+
 class CheckAvailabilityTool(BaseTool):
     """Tool to check availability across user's configured calendars."""
     
@@ -401,9 +416,13 @@ class CheckAvailabilityTool(BaseTool):
     description = "Check if a time slot is free across the user's configured calendars. Requires start_datetime and end_datetime in ISO format with timezone."
     args_schema = CheckAvailabilityInput
     
-    def _run(self, start_datetime: str, end_datetime: str, duration_minutes: int = 30) -> str:
+    def _run(self, start_datetime: str, end_datetime: str = None, duration_minutes: int = 30) -> str:
         """Execute the tool."""
         try:
+            # Calculate end_datetime if not provided
+            if end_datetime is None:
+                end_datetime = calculate_end_datetime(start_datetime, duration_minutes)
+            
             user_id = get_current_user_id()
             calendar_ids = get_included_calendars(user_id)
             

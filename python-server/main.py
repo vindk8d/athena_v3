@@ -288,9 +288,10 @@ async def sync_calendars(request: Request):
         # First, ensure user details exist with default working hours
         try:
             # Check if user details exist
-            user_response = supabase.table('user_details').select('*').eq('user_id', user_id).maybeSingle().execute()
+            user_response = supabase.table('user_details').select('*').eq('user_id', user_id).execute()
+            user_data = user_response.data[0] if user_response.data else None
             
-            if not user_response.data:
+            if not user_data:
                 # Create user details with default working hours
                 default_user = {
                     'user_id': user_id,
@@ -304,7 +305,7 @@ async def sync_calendars(request: Request):
                 }
                 supabase.table('user_details').insert(default_user).execute()
                 logger.info(f"Created user details with default working hours for user {user_id}")
-            elif not user_response.data.get('working_hours_start'):
+            elif not user_data.get('working_hours_start'):
                 # Update existing user with default working hours if missing
                 supabase.table('user_details').update({
                     'working_hours_start': '09:00:00',
@@ -321,15 +322,16 @@ async def sync_calendars(request: Request):
 
         # Get OAuth tokens for the user
         try:
-            oauth_response = supabase.table('user_auth_credentials').select('*').eq('user_id', user_id).eq('provider', 'google').maybeSingle().execute()
+            oauth_response = supabase.table('user_auth_credentials').select('*').eq('user_id', user_id).eq('provider', 'google').execute()
+            oauth_data = oauth_response.data[0] if oauth_response.data else None
             
-            if not oauth_response.data or not oauth_response.data.get('access_token'):
+            if not oauth_data or not oauth_data.get('access_token'):
                 return {"success": False, "error": "No valid OAuth tokens found for user"}
             
             # Initialize calendar service with OAuth tokens
             set_calendar_service(
-                access_token=oauth_response.data['access_token'],
-                refresh_token=oauth_response.data.get('refresh_token')
+                access_token=oauth_data['access_token'],
+                refresh_token=oauth_data.get('refresh_token')
             )
             
             # Now get the calendar service and list calendars

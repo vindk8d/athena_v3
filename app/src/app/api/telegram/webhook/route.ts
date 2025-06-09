@@ -210,7 +210,7 @@ export async function POST(request: Request) {
                 console.log('OAuth token found for user calendar access (user_auth_credentials)')
               } else {
                 console.log('No OAuth token available for calendar access')
-                response = `Hello! I'm ${userDetails.name}'s executive assistant. I notice the calendar isn't connected yet. To enable full scheduling capabilities, please:\n\n1. Visit the web interface at https://athena-v3-rwuk.onrender.com\n2. Sign in with Google account\n3. Grant calendar access permissions\n\nFor now, I can still help with general scheduling coordination!`
+                response = `Hello! I'm ${userDetails.name}'s executive assistant. I notice the calendar isn't connected yet. To enable full scheduling capabilities, please:\n\n1. Visit the web interface\n2. Sign in with Google account\n3. Grant calendar access permissions\n\nFor now, I can still help with general scheduling coordination!`
                 // Continue processing even without calendar access for basic assistant functions
               }
             } catch (tokenError) {

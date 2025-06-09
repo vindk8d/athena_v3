@@ -79,6 +79,9 @@ EXECUTIVE_ASSISTANT_PROMPT = """You are Athena, a professional executive assista
 - Calculate end_datetime = start_datetime + duration
 - Use ISO format with timezone for all datetime parameters
 - Always verify the current date before making any scheduling decisions
+- When asked about the current date, ALWAYS use datetime.utcnow() to get the actual current date
+- NEVER make up or hallucinate dates - always use the system's current date
+- If you need to know the current date, use the calendar tools to check availability for today
 
 ## Communication Style:
 - **Professional but Approachable**: Maintain executive assistant professionalism
@@ -111,7 +114,7 @@ IMPORTANT: Never attempt to use tools without having ALL required parameters. If
 class ExecutiveAssistantAgent:
     """Advanced executive assistant agent using LCEL and tool execution."""
     
-    def __init__(self, openai_api_key: str, model_name: str = "gpt-3.5-turbo", temperature: float = 0.7):
+    def __init__(self, openai_api_key: str, model_name: str = "gpt-3.5-turbo", temperature: float = 0.3):
         """Initialize the executive assistant agent."""
         self.llm = ChatOpenAI(
             temperature=temperature,

@@ -421,6 +421,9 @@ class CheckAvailabilityTool(BaseTool):
         try:
             # Get current datetime in UTC
             current_datetime = datetime.utcnow()
+            logger.info(f"Current datetime (UTC): {current_datetime.isoformat()}")
+            logger.info(f"Current date: {current_datetime.date()}")
+            logger.info(f"Current time: {current_datetime.time()}")
             
             # Calculate end_datetime if not provided
             if end_datetime is None:
@@ -428,7 +431,12 @@ class CheckAvailabilityTool(BaseTool):
             
             # Parse the start datetime to check if it's in the past
             start_dt = datetime.fromisoformat(start_datetime.replace('Z', '+00:00'))
+            logger.info(f"Requested start datetime: {start_dt.isoformat()}")
+            logger.info(f"Requested start date: {start_dt.date()}")
+            logger.info(f"Requested start time: {start_dt.time()}")
+            
             if start_dt < current_datetime:
+                logger.warning(f"Attempted to check availability for past time: {start_datetime}")
                 return f"❌ Cannot check availability for past time: {start_datetime}"
             
             user_id = get_current_user_id()
@@ -465,10 +473,18 @@ class CreateEventTool(BaseTool):
         try:
             # Get current datetime in UTC
             current_datetime = datetime.utcnow()
+            logger.info(f"Current datetime (UTC): {current_datetime.isoformat()}")
+            logger.info(f"Current date: {current_datetime.date()}")
+            logger.info(f"Current time: {current_datetime.time()}")
             
             # Parse the start datetime to check if it's in the past
             start_dt = datetime.fromisoformat(start_datetime.replace('Z', '+00:00'))
+            logger.info(f"Requested start datetime: {start_dt.isoformat()}")
+            logger.info(f"Requested start date: {start_dt.date()}")
+            logger.info(f"Requested start time: {start_dt.time()}")
+            
             if start_dt < current_datetime:
+                logger.warning(f"Attempted to create event in the past: {start_datetime}")
                 return f"❌ Cannot create event in the past: {start_datetime}"
             
             user_id = get_current_user_id()

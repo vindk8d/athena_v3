@@ -187,21 +187,27 @@ export async function POST(request: Request) {
             
             // Get OAuth token for user's calendar access
             let oauthToken = null
+            let oauthRefreshToken = null
+            let oauthTokenExpiresAt = null
+            let oauthMetadata = null
             try {
-              // Instead of getting session (which won't exist in webhook context),
-              // get OAuth tokens from the database using the user ID
-              const { data: userData, error: tokenError } = await supabase
-                .from('user_details')
-                .select('oauth_access_token, oauth_refresh_token')
+              // Get OAuth tokens from user_auth_credentials for Google
+              const { data: userCred, error: tokenError } = await supabase
+                .from('user_auth_credentials')
+                .select('access_token, refresh_token, token_expires_at, metadata')
                 .eq('user_id', userId)
+                .eq('provider', 'google')
                 .maybeSingle()
 
               if (tokenError) {
-                console.warn('Error getting OAuth token from database:', tokenError.message)
+                console.warn('Error getting OAuth token from user_auth_credentials:', tokenError.message)
                 oauthToken = null
-              } else if (userData?.oauth_access_token) {
-                oauthToken = userData.oauth_access_token
-                console.log('OAuth token found for user calendar access')
+              } else if (userCred?.access_token) {
+                oauthToken = userCred.access_token
+                oauthRefreshToken = userCred.refresh_token
+                oauthTokenExpiresAt = userCred.token_expires_at
+                oauthMetadata = userCred.metadata
+                console.log('OAuth token found for user calendar access (user_auth_credentials)')
               } else {
                 console.log('No OAuth token available for calendar access')
                 response = `Hello! I'm ${userDetails.name}'s executive assistant. I notice the calendar isn't connected yet. To enable full scheduling capabilities, please:\n\n1. Visit the web interface at https://athena-v3-rwuk.onrender.com\n2. Sign in with Google account\n3. Grant calendar access permissions\n\nFor now, I can still help with general scheduling coordination!`
@@ -240,7 +246,9 @@ export async function POST(request: Request) {
                 },
                 conversation_history: [],
                 oauth_access_token: oauthToken,
-                oauth_refresh_token: null
+                oauth_refresh_token: oauthRefreshToken,
+                oauth_token_expires_at: oauthTokenExpiresAt,
+                oauth_metadata: oauthMetadata
               })
             })
 

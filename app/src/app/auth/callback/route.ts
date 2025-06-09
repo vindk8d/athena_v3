@@ -29,7 +29,7 @@ export async function GET(request: Request) {
     // Exchange the temporary auth code for a session
     const { data, error } = await supabase.auth.exchangeCodeForSession(code)
     
-    // If successful (no error), store OAuth tokens in database and redirect to homepage
+    // If successful (no error), store OAuth tokens in user_auth_credentials and redirect to homepage
     if (!error && data.session && data.session.user) {
       try {
         const user = data.session.user
@@ -40,20 +40,20 @@ export async function GET(request: Request) {
         const expiresAt = new Date(Date.now() + 3600 * 1000) // 1 hour from now
         
         if (accessToken) {
-          // Store or update OAuth tokens in user_details table
+          // Store or update OAuth tokens in user_auth_credentials table
           const { error: upsertError } = await supabase
-            .from('user_details')
+            .from('user_auth_credentials')
             .upsert({
               user_id: user.id,
-              oauth_access_token: accessToken,
-              oauth_refresh_token: refreshToken,
-              oauth_token_expires_at: expiresAt.toISOString(),
-              name: user.user_metadata?.full_name || user.email,
-              email: user.email,
+              provider: 'google',
+              access_token: accessToken,
+              refresh_token: refreshToken,
+              token_expires_at: expiresAt.toISOString(),
+              metadata: {},
               updated_at: new Date().toISOString(),
               created_at: new Date().toISOString()
             }, {
-              onConflict: 'user_id'
+              onConflict: 'user_id,provider'
             })
           
           if (upsertError) {

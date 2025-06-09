@@ -1,14 +1,15 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 import os
 from dotenv import load_dotenv
 from typing import Optional, Dict, Any, List
 import logging
+from datetime import datetime
 
 from config import Config
 from agent import get_agent, reset_agent
 from memory import memory_manager
-from tools import set_current_user_id
+from tools import set_current_user_id, get_supabase_client, get_calendar_service
 
 # Load environment variables
 load_dotenv()
@@ -261,6 +262,56 @@ async def simple_process_message(request: ProcessMessageRequest):
     except Exception as e:
         logger.error(f"Error in simple processing: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error in simple processing: {str(e)}")
+
+@app.post("/sync-calendars")
+async def sync_calendars(request: Request):
+    """
+    Sync user's Google calendars and update calendar_list table.
+    Expects user_id as a query parameter.
+    """
+    user_id = request.query_params.get('user_id')
+    if not user_id:
+        return {"success": False, "error": "Missing user_id parameter"}
+    try:
+        supabase = get_supabase_client()
+        calendar_service = get_calendar_service()
+        calendars = calendar_service.list_calendars()
+        if not calendars:
+            return {"success": False, "error": "No calendars found"}
+        # Fetch existing calendars
+        response = supabase.table('calendar_list').select('*').eq('user_id', user_id).eq('calendar_type', 'google').execute()
+        existing = {c['calendar_id']: c for c in (response.data or [])}
+        # Prepare upserts
+        upserts = []
+        for cal in calendars:
+            upserts.append({
+                "user_id": user_id,
+                "calendar_id": cal['id'],
+                "calendar_name": cal.get('summary', cal.get('name', 'Unnamed Calendar')),
+                "calendar_type": "google",
+                "is_primary": cal.get('primary', False),
+                "access_role": cal.get('accessRole', 'reader'),
+                "timezone": cal.get('timeZone', 'UTC'),
+                "to_include_in_check": existing.get(cal['id'], {}).get('to_include_in_check', True),
+                "metadata": {},
+                "updated_at": datetime.utcnow().isoformat()
+            })
+        supabase.table('calendar_list').upsert(upserts, on_conflict=['user_id', 'calendar_id', 'calendar_type']).execute()
+        return {"success": True}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.get("/get-calendars")
+async def get_calendars(user_id: str):
+    """
+    Get user's calendar list from calendar_list table.
+    """
+    try:
+        supabase = get_supabase_client()
+        response = supabase.table('calendar_list').select('*').eq('user_id', user_id).eq('calendar_type', 'google').execute()
+        return {"success": True, "calendars": response.data or []}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 if __name__ == "__main__":
     import uvicorn

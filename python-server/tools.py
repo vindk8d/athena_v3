@@ -419,9 +419,17 @@ class CheckAvailabilityTool(BaseTool):
     def _run(self, start_datetime: str, end_datetime: str = None, duration_minutes: int = 30) -> str:
         """Execute the tool."""
         try:
+            # Get current datetime in UTC
+            current_datetime = datetime.utcnow()
+            
             # Calculate end_datetime if not provided
             if end_datetime is None:
                 end_datetime = calculate_end_datetime(start_datetime, duration_minutes)
+            
+            # Parse the start datetime to check if it's in the past
+            start_dt = datetime.fromisoformat(start_datetime.replace('Z', '+00:00'))
+            if start_dt < current_datetime:
+                return f"❌ Cannot check availability for past time: {start_datetime}"
             
             user_id = get_current_user_id()
             calendar_ids = get_included_calendars(user_id)
@@ -455,6 +463,14 @@ class CreateEventTool(BaseTool):
             attendee_emails: List[str] = None, description: str = "", location: str = "") -> str:
         """Execute the tool."""
         try:
+            # Get current datetime in UTC
+            current_datetime = datetime.utcnow()
+            
+            # Parse the start datetime to check if it's in the past
+            start_dt = datetime.fromisoformat(start_datetime.replace('Z', '+00:00'))
+            if start_dt < current_datetime:
+                return f"❌ Cannot create event in the past: {start_datetime}"
+            
             user_id = get_current_user_id()
             calendar_ids = get_included_calendars(user_id)
             

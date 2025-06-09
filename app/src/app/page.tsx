@@ -21,9 +21,25 @@ export default function Home() {
       }
       setUser(session.user)
       
-      // Check if calendar access is available
-      const hasCalendarAccess = session.provider_token !== undefined
-      setCalendarConnected(hasCalendarAccess)
+      // Check if calendar access is available by querying the database
+      try {
+        const { data: userDetails, error } = await supabase
+          .from('user_details')
+          .select('oauth_access_token')
+          .eq('user_id', session.user.id)
+          .maybeSingle()
+        
+        if (error) {
+          console.warn('Error checking calendar connection:', error.message)
+          setCalendarConnected(false)
+        } else {
+          const hasCalendarAccess = userDetails?.oauth_access_token !== null && userDetails?.oauth_access_token !== undefined
+          setCalendarConnected(hasCalendarAccess)
+        }
+      } catch (error) {
+        console.error('Error checking calendar connection:', error)
+        setCalendarConnected(false)
+      }
       
       setLoading(false)
     }

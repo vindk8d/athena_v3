@@ -27,13 +27,45 @@ export async function GET(request: Request) {
     )
 
     // Exchange the temporary auth code for a session
-    const { error } = await supabase.auth.exchangeCodeForSession(code)
+    const { data, error } = await supabase.auth.exchangeCodeForSession(code)
     
-    // If successful (no error), redirect to homepage at domain root
-    // Based on the page.tsx file, this will show a welcome page with user info and sign out button
-    // e.g. if running locally: http://localhost:3000/
-    // e.g. in production: https://your-domain.com/
-    if (!error) {
+    // If successful (no error), store OAuth tokens in database and redirect to homepage
+    if (!error && data.session && data.session.user) {
+      try {
+        const user = data.session.user
+        const accessToken = data.session.provider_token
+        const refreshToken = data.session.provider_refresh_token
+        
+        // Calculate token expiration (typically 1 hour for Google)
+        const expiresAt = new Date(Date.now() + 3600 * 1000) // 1 hour from now
+        
+        if (accessToken) {
+          // Store or update OAuth tokens in user_details table
+          const { error: upsertError } = await supabase
+            .from('user_details')
+            .upsert({
+              user_id: user.id,
+              oauth_access_token: accessToken,
+              oauth_refresh_token: refreshToken,
+              oauth_token_expires_at: expiresAt.toISOString(),
+              name: user.user_metadata?.full_name || user.email,
+              email: user.email,
+              updated_at: new Date().toISOString(),
+              created_at: new Date().toISOString()
+            }, {
+              onConflict: 'user_id'
+            })
+          
+          if (upsertError) {
+            console.error('Error storing OAuth tokens:', upsertError.message)
+          } else {
+            console.log('OAuth tokens stored successfully for user:', user.id)
+          }
+        }
+      } catch (tokenError) {
+        console.error('Error processing OAuth tokens:', tokenError)
+      }
+      
       return NextResponse.redirect(new URL('/', requestUrl.origin))
     }
   }

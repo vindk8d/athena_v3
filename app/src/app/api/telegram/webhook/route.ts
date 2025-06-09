@@ -188,9 +188,19 @@ export async function POST(request: Request) {
             // Get OAuth token for user's calendar access
             let oauthToken = null
             try {
-              const { data: { session } } = await supabase.auth.getSession()
-              if (session?.provider_token) {
-                oauthToken = session.provider_token
+              // Instead of getting session (which won't exist in webhook context),
+              // get OAuth tokens from the database using the user ID
+              const { data: userData, error: tokenError } = await supabase
+                .from('user_details')
+                .select('oauth_access_token, oauth_refresh_token')
+                .eq('user_id', userId)
+                .maybeSingle()
+
+              if (tokenError) {
+                console.warn('Error getting OAuth token from database:', tokenError.message)
+                oauthToken = null
+              } else if (userData?.oauth_access_token) {
+                oauthToken = userData.oauth_access_token
                 console.log('OAuth token found for user calendar access')
               } else {
                 console.log('No OAuth token available for calendar access')

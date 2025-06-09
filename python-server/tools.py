@@ -9,6 +9,8 @@ from google.oauth2.credentials import Credentials  # Import for handling OAuth c
 from googleapiclient.discovery import build  # Import for building Google API client
 from googleapiclient.errors import HttpError  # Import for handling Google API errors
 import pytz  # Import for timezone operations
+import os  # Import for environment variables
+from google.auth.transport.requests import Request  # Import for refreshing access tokens
 
 # Set up logging
 logger = logging.getLogger(__name__)  # Create a logger instance for this module
@@ -63,8 +65,8 @@ class CalendarService:
                 token=access_token,
                 refresh_token=refresh_token,
                 token_uri="https://oauth2.googleapis.com/token",
-                client_id=None,  # Will be set if needed
-                client_secret=None,  # Will be set if needed
+                client_id=os.getenv('GOOGLE_CLIENT_ID'),  # Add client credentials for refresh
+                client_secret=os.getenv('GOOGLE_CLIENT_SECRET'),
             )
             
             # Build the calendar service using the credentials
@@ -74,6 +76,23 @@ class CalendarService:
         except Exception as e:
             logger.error(f"Error initializing calendar service: {e}")  # Log any errors during initialization
             raise  # Re-raise the exception
+    
+    def refresh_token_if_needed(self):
+        """Refresh the access token if it's expired or about to expire."""
+        try:
+            if self.credentials.expired and self.credentials.refresh_token:
+                logger.info("Access token expired, refreshing...")
+                self.credentials.refresh(Request())
+                logger.info("Access token refreshed successfully")
+                return {
+                    'access_token': self.credentials.token,
+                    'refresh_token': self.credentials.refresh_token,
+                    'expires_at': self.credentials.expiry.isoformat() if self.credentials.expiry else None
+                }
+            return None
+        except Exception as e:
+            logger.error(f"Error refreshing token: {e}")
+            raise
     
     def list_calendars(self) -> List[Dict[str, Any]]:
         """List all calendars for the authenticated user."""

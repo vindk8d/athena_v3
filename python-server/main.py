@@ -361,7 +361,11 @@ async def sync_calendars(request: Request):
                     "updated_at": datetime.utcnow().isoformat()
                 })
             
-            supabase.table('calendar_list').upsert(upserts, on_conflict=['user_id', 'calendar_id', 'calendar_type']).execute()
+            # Use the correct unique constraint for upsert
+            supabase.table('calendar_list').upsert(
+                upserts,
+                on_conflict='user_id,calendar_id,calendar_type'
+            ).execute()
             return {"success": True}
             
         except Exception as e:

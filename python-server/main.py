@@ -299,7 +299,7 @@ async def sync_calendars(request: Request):
                     'working_hours_end': '17:00:00',
                     'meeting_duration': 30,
                     'buffer_time': 15,
-                    'timezone': 'UTC',
+                    'default_timezone': 'UTC',  # Default timezone
                     'created_at': datetime.utcnow().isoformat(),
                     'updated_at': datetime.utcnow().isoformat()
                 }
@@ -312,68 +312,56 @@ async def sync_calendars(request: Request):
                     'working_hours_end': '17:00:00',
                     'meeting_duration': 30,
                     'buffer_time': 15,
-                    'timezone': 'UTC',
+                    'default_timezone': user_data.get('default_timezone', 'UTC'),  # Preserve existing timezone
                     'updated_at': datetime.utcnow().isoformat()
                 }).eq('user_id', user_id).execute()
                 logger.info(f"Updated user details with default working hours for user {user_id}")
         except Exception as e:
             logger.error(f"Error managing user details: {e}")
             return {"success": False, "error": f"Error managing user details: {str(e)}"}
-
-        # Get OAuth tokens for the user
+        
+        # Get calendar service
+        calendar_service = get_calendar_service()
+        if not calendar_service:
+            return {"success": False, "error": "Calendar service not initialized"}
+        
+        # Get list of calendars
         try:
-            oauth_response = supabase.table('user_auth_credentials').select('*').eq('user_id', user_id).eq('provider', 'google').execute()
-            oauth_data = oauth_response.data[0] if oauth_response.data else None
-            
-            if not oauth_data or not oauth_data.get('access_token'):
-                return {"success": False, "error": "No valid OAuth tokens found for user"}
-            
-            # Initialize calendar service with OAuth tokens
-            set_calendar_service(
-                access_token=oauth_data['access_token'],
-                refresh_token=oauth_data.get('refresh_token')
-            )
-            
-            # Now get the calendar service and list calendars
-            calendar_service = get_calendar_service()
             calendars = calendar_service.list_calendars()
             
-            if not calendars:
-                return {"success": False, "error": "No calendars found"}
+            # Update calendar_list table
+            for calendar in calendars:
+                calendar_data = {
+                    'user_id': user_id,
+                    'calendar_id': calendar['id'],
+                    'calendar_name': calendar['summary'],
+                    'calendar_type': 'google',
+                    'is_primary': calendar['primary'],
+                    'access_role': calendar['access_role'],
+                    'calendar_timezone': calendar['timezone'],  # Store calendar timezone
+                    'to_include_in_check': True,  # Default to including in availability checks
+                    'updated_at': datetime.utcnow().isoformat()
+                }
+                
+                # Check if calendar already exists
+                existing = supabase.table('calendar_list').select('id').eq('user_id', user_id).eq('calendar_id', calendar['id']).execute()
+                
+                if existing.data:
+                    # Update existing calendar
+                    supabase.table('calendar_list').update(calendar_data).eq('id', existing.data[0]['id']).execute()
+                else:
+                    # Insert new calendar
+                    calendar_data['created_at'] = datetime.utcnow().isoformat()
+                    supabase.table('calendar_list').insert(calendar_data).execute()
             
-            # Fetch existing calendars
-            response = supabase.table('calendar_list').select('*').eq('user_id', user_id).eq('calendar_type', 'google').execute()
-            existing = {c['calendar_id']: c for c in (response.data or [])}
-            
-            # Prepare upserts
-            upserts = []
-            for cal in calendars:
-                upserts.append({
-                    "user_id": user_id,
-                    "calendar_id": cal['id'],
-                    "calendar_name": cal.get('summary', cal.get('name', 'Unnamed Calendar')),
-                    "calendar_type": "google",
-                    "is_primary": cal.get('primary', False),
-                    "access_role": cal.get('accessRole', 'reader'),
-                    "timezone": cal.get('timeZone', 'UTC'),
-                    "to_include_in_check": existing.get(cal['id'], {}).get('to_include_in_check', True),
-                    "metadata": {},
-                    "updated_at": datetime.utcnow().isoformat()
-                })
-            
-            # Use the correct unique constraint for upsert
-            supabase.table('calendar_list').upsert(
-                upserts,
-                on_conflict='user_id,calendar_id,calendar_type'
-            ).execute()
-            return {"success": True}
+            return {"success": True, "message": f"Successfully synced {len(calendars)} calendars"}
             
         except Exception as e:
             logger.error(f"Error syncing calendars: {e}")
-            return {"success": False, "error": str(e)}
+            return {"success": False, "error": f"Error syncing calendars: {str(e)}"}
             
     except Exception as e:
-        logger.error(f"Error in sync-calendars endpoint: {e}")
+        logger.error(f"Error in sync_calendars: {e}")
         return {"success": False, "error": str(e)}
 
 @app.get("/get-calendars")

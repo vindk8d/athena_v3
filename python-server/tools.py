@@ -2,7 +2,7 @@
 from typing import List, Dict, Any, Optional, Tuple  # Import types for type hinting
 from langchain.tools import BaseTool  # Import BaseTool for creating custom tools
 from pydantic import BaseModel, Field  # Import for creating data models and fields
-from datetime import datetime, timedelta  # Import for date and time operations
+from datetime import datetime, timedelta, timezone  # Import for date and time operations
 import json  # Import for JSON operations (not used in this snippet)
 import logging  # Import for logging functionality
 from google.oauth2.credentials import Credentials  # Import for handling OAuth credentials
@@ -397,8 +397,12 @@ class GetEventsTool(BaseTool):
 def calculate_end_datetime(start_datetime: str, duration_minutes: int) -> str:
     """Calculate end datetime from start datetime and duration in minutes."""
     try:
+        # Ensure the input datetime has timezone info
+        if 'Z' in start_datetime:
+            start_datetime = start_datetime.replace('Z', '+00:00')
+        
         # Parse the start datetime
-        start_dt = datetime.fromisoformat(start_datetime.replace('Z', '+00:00'))
+        start_dt = datetime.fromisoformat(start_datetime)
         
         # Calculate end datetime
         end_dt = start_dt + timedelta(minutes=duration_minutes)
@@ -408,6 +412,40 @@ def calculate_end_datetime(start_datetime: str, duration_minutes: int) -> str:
     except Exception as e:
         logger.error(f"Error calculating end datetime: {e}")
         raise
+
+def get_user_timezone(user_id: str) -> str:
+    """Get user's default timezone from user_details."""
+    try:
+        supabase = get_supabase_client()
+        if not supabase:
+            logger.error("Could not initialize Supabase client")
+            return "UTC"
+        
+        response = supabase.table('user_details').select('default_timezone').eq('user_id', user_id).execute()
+        
+        if response.data and response.data[0].get('default_timezone'):
+            return response.data[0]['default_timezone']
+        return "UTC"
+    except Exception as e:
+        logger.error(f"Error fetching user timezone: {e}")
+        return "UTC"
+
+def get_calendar_timezone(user_id: str, calendar_id: str) -> str:
+    """Get calendar's timezone from calendar_list."""
+    try:
+        supabase = get_supabase_client()
+        if not supabase:
+            logger.error("Could not initialize Supabase client")
+            return "UTC"
+        
+        response = supabase.table('calendar_list').select('calendar_timezone').eq('user_id', user_id).eq('calendar_id', calendar_id).execute()
+        
+        if response.data and response.data[0].get('calendar_timezone'):
+            return response.data[0]['calendar_timezone']
+        return "UTC"
+    except Exception as e:
+        logger.error(f"Error fetching calendar timezone: {e}")
+        return "UTC"
 
 class CheckAvailabilityTool(BaseTool):
     """Tool to check availability across user's configured calendars."""
@@ -419,9 +457,12 @@ class CheckAvailabilityTool(BaseTool):
     def _run(self, start_datetime: str, end_datetime: str = None, duration_minutes: int = 30) -> str:
         """Execute the tool."""
         try:
-            # Get current datetime in UTC
-            current_datetime = datetime.utcnow()
-            logger.info(f"Current datetime (UTC): {current_datetime.isoformat()}")
+            user_id = get_current_user_id()
+            user_timezone = get_user_timezone(user_id)
+            
+            # Get current datetime in user's timezone
+            current_datetime = datetime.now(pytz.timezone(user_timezone))
+            logger.info(f"Current datetime ({user_timezone}): {current_datetime.isoformat()}")
             logger.info(f"Current date: {current_datetime.date()}")
             logger.info(f"Current time: {current_datetime.time()}")
             
@@ -430,7 +471,10 @@ class CheckAvailabilityTool(BaseTool):
                 end_datetime = calculate_end_datetime(start_datetime, duration_minutes)
             
             # Parse the start datetime to check if it's in the past
-            start_dt = datetime.fromisoformat(start_datetime.replace('Z', '+00:00'))
+            # Ensure the input datetime has timezone info
+            if 'Z' in start_datetime:
+                start_datetime = start_datetime.replace('Z', '+00:00')
+            start_dt = datetime.fromisoformat(start_datetime)
             logger.info(f"Requested start datetime: {start_dt.isoformat()}")
             logger.info(f"Requested start date: {start_dt.date()}")
             logger.info(f"Requested start time: {start_dt.time()}")
@@ -439,7 +483,6 @@ class CheckAvailabilityTool(BaseTool):
                 logger.warning(f"Attempted to check availability for past time: {start_datetime}")
                 return f"❌ Cannot check availability for past time: {start_datetime}"
             
-            user_id = get_current_user_id()
             calendar_ids = get_included_calendars(user_id)
             
             if not calendar_ids:
@@ -471,14 +514,20 @@ class CreateEventTool(BaseTool):
             attendee_emails: List[str] = None, description: str = "", location: str = "") -> str:
         """Execute the tool."""
         try:
-            # Get current datetime in UTC
-            current_datetime = datetime.utcnow()
-            logger.info(f"Current datetime (UTC): {current_datetime.isoformat()}")
+            user_id = get_current_user_id()
+            user_timezone = get_user_timezone(user_id)
+            
+            # Get current datetime in user's timezone
+            current_datetime = datetime.now(pytz.timezone(user_timezone))
+            logger.info(f"Current datetime ({user_timezone}): {current_datetime.isoformat()}")
             logger.info(f"Current date: {current_datetime.date()}")
             logger.info(f"Current time: {current_datetime.time()}")
             
             # Parse the start datetime to check if it's in the past
-            start_dt = datetime.fromisoformat(start_datetime.replace('Z', '+00:00'))
+            # Ensure the input datetime has timezone info
+            if 'Z' in start_datetime:
+                start_datetime = start_datetime.replace('Z', '+00:00')
+            start_dt = datetime.fromisoformat(start_datetime)
             logger.info(f"Requested start datetime: {start_dt.isoformat()}")
             logger.info(f"Requested start date: {start_dt.date()}")
             logger.info(f"Requested start time: {start_dt.time()}")
@@ -487,7 +536,6 @@ class CreateEventTool(BaseTool):
                 logger.warning(f"Attempted to create event in the past: {start_datetime}")
                 return f"❌ Cannot create event in the past: {start_datetime}"
             
-            user_id = get_current_user_id()
             calendar_ids = get_included_calendars(user_id)
             
             if not calendar_ids:
@@ -495,20 +543,13 @@ class CreateEventTool(BaseTool):
             
             # Use the first configured calendar (usually primary) for creating events
             primary_calendar = calendar_ids[0]
+            calendar_timezone = get_calendar_timezone(user_id, primary_calendar)
             
             service = get_calendar_service()
             
-            # Extract timezone from start_datetime
-            timezone = "UTC"
-            if '+' in start_datetime:
-                timezone_offset = start_datetime.split('+')[1]
-                timezone = f"UTC+{timezone_offset}"
-            elif 'T' in start_datetime and start_datetime.endswith('Z'):
-                timezone = "UTC"
-            
             event = service.create_event(
                 primary_calendar, title, description, start_datetime, 
-                end_datetime, timezone, attendee_emails or [], location
+                end_datetime, calendar_timezone, attendee_emails or [], location
             )
             
             result = f"✅ Meeting scheduled successfully on your calendar!\n"

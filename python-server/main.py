@@ -338,7 +338,7 @@ async def sync_calendars(request: Request):
                     'calendar_type': 'google',
                     'is_primary': calendar['primary'],
                     'access_role': calendar['access_role'],
-                    'calendar_timezone': calendar['timezone'],  # Store calendar timezone
+                    'timezone': calendar['timezone'],  # Use correct column
                     'to_include_in_check': True,  # Default to including in availability checks
                     'updated_at': datetime.utcnow().isoformat()
                 }

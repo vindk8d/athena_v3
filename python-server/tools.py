@@ -437,11 +437,9 @@ def get_calendar_timezone(user_id: str, calendar_id: str) -> str:
         if not supabase:
             logger.error("Could not initialize Supabase client")
             return "UTC"
-        
-        response = supabase.table('calendar_list').select('calendar_timezone').eq('user_id', user_id).eq('calendar_id', calendar_id).execute()
-        
-        if response.data and response.data[0].get('calendar_timezone'):
-            return response.data[0]['calendar_timezone']
+        response = supabase.table('calendar_list').select('timezone').eq('user_id', user_id).eq('calendar_id', calendar_id).execute()
+        if response.data and response.data[0].get('timezone'):
+            return response.data[0]['timezone']
         return "UTC"
     except Exception as e:
         logger.error(f"Error fetching calendar timezone: {e}")

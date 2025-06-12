@@ -573,3 +573,20 @@ calendar_tools = [
     CheckAvailabilityTool(),
     CreateEventTool()
 ]
+
+# Highlighted tools that agents can use:
+
+# 1. GetEventsTool:
+#    - Purpose: Retrieves events from the user's calendars for a specified date range.
+#    - Usage: Useful for checking what meetings are already scheduled.
+
+# 2. CheckAvailabilityTool:
+#    - Purpose: Checks if a time slot is free across the user's configured calendars.
+#    - Usage: Helps determine if a specific time period is available for scheduling.
+
+# 3. CreateEventTool:
+#    - Purpose: Creates a new calendar event on the user's primary calendar.
+#    - Usage: Used to schedule meetings after confirming availability.
+
+# These tools allow agents to interact with the user's calendar, check for conflicts,
+# and create new events as needed.

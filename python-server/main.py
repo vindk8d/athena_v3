@@ -320,10 +320,23 @@ async def sync_calendars(request: Request):
             logger.error(f"Error managing user details: {e}")
             return {"success": False, "error": f"Error managing user details: {str(e)}"}
         
-        # Get calendar service
-        calendar_service = get_calendar_service()
-        if not calendar_service:
-            return {"success": False, "error": "Calendar service not initialized"}
+        # Get OAuth tokens from user_details
+        try:
+            user_details = supabase.table('user_details').select('oauth_access_token, oauth_refresh_token').eq('user_id', user_id).execute()
+            if not user_details.data or not user_details.data[0].get('oauth_access_token'):
+                return {"success": False, "error": "No OAuth tokens found for user"}
+            
+            oauth_data = user_details.data[0]
+            access_token = oauth_data['oauth_access_token']
+            refresh_token = oauth_data.get('oauth_refresh_token')
+            
+            # Initialize calendar service with OAuth tokens
+            set_calendar_service(access_token, refresh_token)
+            calendar_service = get_calendar_service()
+            
+        except Exception as e:
+            logger.error(f"Error initializing calendar service: {e}")
+            return {"success": False, "error": f"Error initializing calendar service: {str(e)}"}
         
         # Get list of calendars
         try:

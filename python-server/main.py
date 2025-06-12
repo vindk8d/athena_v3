@@ -130,7 +130,7 @@ async def process_message(request: ProcessMessageRequest):
         
         # Set up calendar service if access token provided
         if request.oauth_access_token:
-            set_calendar_service(request.oauth_access_token, request.oauth_refresh_token)
+            set_calendar_service(request.oauth_access_token, request.oauth_refresh_token, user_id)
             logger.info(f"Calendar service initialized for user {user_id}")
         
         # Set the current user ID for tool context
@@ -345,8 +345,12 @@ async def sync_calendars(request: Request):
             refresh_token = oauth_data.get('refresh_token')
             
             # Initialize calendar service with OAuth tokens
-            set_calendar_service(access_token, refresh_token)
+            set_calendar_service(access_token, refresh_token, user_id)
             calendar_service = get_calendar_service()
+            
+            # Set user context for tools
+            set_current_user_id(user_id)
+            logger.info(f"User context set for tools: {user_id}")
             
         except Exception as e:
             logger.error(f"Error initializing calendar service: {e}")

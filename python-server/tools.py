@@ -287,7 +287,7 @@ class CalendarService:
 _calendar_service: Optional[CalendarService] = None
 _current_user_id: Optional[str] = None
 
-def set_calendar_service(access_token: str, refresh_token: str = None):
+def set_calendar_service(access_token: str, refresh_token: str = None, user_id: str = None):
     """Set the global calendar service instance."""
     global _calendar_service
     _calendar_service = CalendarService(access_token, refresh_token)
@@ -307,14 +307,16 @@ def set_calendar_service(access_token: str, refresh_token: str = None):
                 os.getenv('SUPABASE_SERVICE_ROLE_KEY')  # Use service role key for backend operations
             )
             
-            # Get current user_id from the global context
-            user_id = get_current_user_id()
-            if user_id:
+            # Use provided user_id or get from global context
+            current_user_id = user_id or get_current_user_id()
+            if current_user_id:
                 supabase.table('user_details').update({
                     'default_timezone': primary_calendar['timezone'],
                     'updated_at': datetime.utcnow().isoformat()
-                }).eq('user_id', user_id).execute()
+                }).eq('user_id', current_user_id).execute()
                 logger.info(f"Updated user's default timezone to {primary_calendar['timezone']}")
+            else:
+                logger.warning("Could not update timezone: No user ID available")
     except Exception as e:
         logger.error(f"Error updating user's default timezone: {e}")
 

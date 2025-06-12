@@ -242,7 +242,8 @@ export async function POST(request: Request) {
                   working_hours_start: userDetails.working_hours_start,
                   working_hours_end: userDetails.working_hours_end,
                   meeting_duration: userDetails.meeting_duration,
-                  buffer_time: userDetails.buffer_time
+                  buffer_time: userDetails.buffer_time,
+                  default_timezone: userDetails.default_timezone || 'UTC'
                 },
                 conversation_history: [],
                 oauth_access_token: oauthToken,

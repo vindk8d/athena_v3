@@ -24,8 +24,7 @@ EXECUTIVE_ASSISTANT_PROMPT = """You are Athena, a professional executive assista
 ⚠️  BEFORE CALLING ANY TOOL, YOU MUST VERIFY YOU HAVE ALL REQUIRED INFORMATION:
 
 **For check_availability tool:**
-- REQUIRED: start_datetime (ISO format with timezone, e.g., '2024-01-15T09:00:00+08:00')
-- REQUIRED: end_datetime (ISO format with timezone, e.g., '2024-01-15T10:00:00+08:00')
+- REQUIRED: query (natural language availability question, e.g., "what slots are available tomorrow?")
 - OPTIONAL: duration_minutes (defaults to 30)
 
 **For create_event tool:**
@@ -48,7 +47,6 @@ If you don't have the required information, STOP and ask the colleague for it. D
 2. **Identify what's missing** for the tool you want to use
 3. **Ask specifically** for missing required information
 4. **Only call tools** once you have ALL required parameters
-5. **Calculate end_datetime** from start_datetime + duration if needed
 
 ## Current Time Context:
 - The current datetime will be provided in each message
@@ -283,19 +281,12 @@ class ToolInputValidator:
     """Helper class to validate tool inputs before execution."""
     
     @staticmethod
-    def validate_check_availability(start_datetime: str, end_datetime: str) -> Dict[str, Any]:
+    def validate_check_availability(query: str) -> Dict[str, Any]:
         """Validate inputs for check_availability tool."""
         errors = []
         
-        if not start_datetime:
-            errors.append("start_datetime is required")
-        elif not MeetingInfoExtractor._is_valid_iso_datetime(start_datetime):
-            errors.append("start_datetime must be in ISO format with timezone")
-            
-        if not end_datetime:
-            errors.append("end_datetime is required")
-        elif not MeetingInfoExtractor._is_valid_iso_datetime(end_datetime):
-            errors.append("end_datetime must be in ISO format with timezone")
+        if not query or not query.strip():
+            errors.append("query is required")
             
         return {"is_valid": len(errors) == 0, "errors": errors}
     
@@ -510,8 +501,7 @@ Response format:
         # Then proceed with normal tool validation
         if tool_name == "check_availability":
             validation = ToolInputValidator.validate_check_availability(
-                tool_input.get("start_datetime", ""),
-                tool_input.get("end_datetime", "")
+                tool_input.get("query", "")
             )
             if not validation["is_valid"]:
                 blocking_result.update({
@@ -640,7 +630,7 @@ Return only the JSON list, no other text:"""
         }
     
     async def process_message(self, contact_id: str, message: str, user_id: str, user_details: Dict[str, Any] = None, access_token: str = None) -> Dict[str, Any]:
-        """Process a message with enhanced error handling and input gathering."""
+        """Process a message from a contact with enhanced validation and confirmation flow."""
         try:
             # Use the raw UUID contact_id for memory and DB
             memory = memory_manager.get_memory(contact_id)
@@ -666,10 +656,57 @@ Return only the JSON list, no other text:"""
             user_tz = pytz.timezone(user_timezone)
             current_datetime = datetime.now(user_tz)
             
-            # Analyze conversation context using LLM
+            # Add confirmation tracking to conversation context
             conversation_context = await self._analyze_conversation_context(chat_history, message)
-            logger.info(f"Conversation context: {conversation_context}")
-            
+            conversation_context["awaiting_confirmation"] = False
+            conversation_context["proposed_meeting_details"] = None
+
+            # Check if we're awaiting confirmation from a previous message
+            if conversation_context.get("awaiting_confirmation"):
+                # Check if the message contains confirmation
+                if any(word in message.lower() for word in ["yes", "sure", "okay", "ok", "confirm", "confirmed", "proceed", "go ahead"]):
+                    # User confirmed, proceed with event creation
+                    if conversation_context.get("proposed_meeting_details"):
+                        meeting_details = conversation_context["proposed_meeting_details"]
+                        # Create the event
+                        create_event_result = await self._create_event_with_details(meeting_details)
+                        return {
+                            "response": create_event_result,
+                            "intent": "meeting_scheduled_for_user",
+                            "extracted_info": {
+                                "meeting_created_for_user": True,
+                                "event_details": meeting_details
+                            },
+                            "tools_used": [{"tool": "create_event", "input": meeting_details, "output": create_event_result}],
+                            "conversation_id": contact_id,
+                            "user_id": user_id,
+                            "contact_id": contact_id
+                        }
+                elif any(word in message.lower() for word in ["no", "nope", "don't", "cancel", "stop"]):
+                    # User declined, reset and ask for new preferences
+                    conversation_context["awaiting_confirmation"] = False
+                    conversation_context["proposed_meeting_details"] = None
+                    return {
+                        "response": "I understand you'd like to try a different time. What time would work better for you?",
+                        "intent": "gathering_time",
+                        "extracted_info": {},
+                        "tools_used": [],
+                        "conversation_id": contact_id,
+                        "user_id": user_id,
+                        "contact_id": contact_id
+                    }
+                else:
+                    # Unclear response, ask for explicit confirmation
+                    return {
+                        "response": "I need a clear confirmation to proceed. Would you like me to schedule the meeting for the proposed time? Please respond with 'yes' or 'no'.",
+                        "intent": "awaiting_confirmation",
+                        "extracted_info": {},
+                        "tools_used": [],
+                        "conversation_id": contact_id,
+                        "user_id": user_id,
+                        "contact_id": contact_id
+                    }
+
             # Extract meeting details from message and history using LLM
             meeting_details = await LLMMeetingInfoExtractor.extract_meeting_details(
                 self.llm, message, chat_history, current_datetime, user_timezone
@@ -713,22 +750,21 @@ Extracted Meeting Information:
 
 CRITICAL VALIDATION RULES:
 ⚠️  Before calling ANY tool, verify you have ALL required parameters:
-- check_availability: MUST have start_datetime AND end_datetime
+- check_availability: MUST have query (natural language availability question)
 - create_event: MUST have title AND start_datetime AND end_datetime  
 - get_events: MUST have start_datetime AND end_datetime
 
 🚫 If ANY required parameter is missing, DO NOT call the tool. Instead, ask the colleague for the missing information.
 
-✅ If you have ALL required information (extracted meeting details show start_datetime and end_datetime are calculated), proceed with tool calls:
-- Use check_availability to check the user's calendar
+✅ If you have ALL required information, proceed with tool calls:
+- Use check_availability with natural language query (e.g., "what slots are available tomorrow?")
 - Use create_event to schedule the meeting once availability is confirmed
 
 Important Guidelines:
 - You are {user_name}'s executive assistant
 - This colleague wants to interact with {user_name}, not with you directly
 - All meeting scheduling should be for meetings WITH {user_name}
-- Before using any tools, ensure you have all required information (date, time, duration)
-- Calculate end_datetime from start_datetime + duration
+- Before using any tools, ensure you have all required information
 - Use {user_timezone} timezone for all datetime calculations
 - The calendar list is pre-configured - no need to list calendars manually
 - Always use the current datetime ({current_datetime.strftime('%Y-%m-%d %H:%M:%S %Z')}) as reference for relative time expressions"""
@@ -1090,6 +1126,21 @@ Response format:
         
         fallback["confidence"] = 0.5
         return fallback
+
+    async def _create_event_with_details(self, meeting_details: Dict[str, Any]) -> str:
+        """Helper method to create an event with the given details."""
+        try:
+            # Create the event using the CreateEventTool
+            create_event_tool = next(tool for tool in calendar_tools if tool.name == "create_event")
+            result = await create_event_tool._arun(
+                title=meeting_details["title"],
+                start_datetime=meeting_details["start_datetime"],
+                end_datetime=meeting_details["end_datetime"]
+            )
+            return result
+        except Exception as e:
+            logger.error(f"Error creating event: {e}")
+            return f"❌ Error creating the meeting: {str(e)}"
 
 # Agent factory function
 def create_agent(openai_api_key: str = None, model_name: str = None, temperature: float = None) -> ExecutiveAssistantAgent:

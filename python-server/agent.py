@@ -127,10 +127,13 @@ If you don't have the required information, STOP and ask the colleague for it. D
 - Example: "The current date is March 15, 2024, 2:30 PM Pacific Time (PT)"
 
 ## Timezone Handling:
-- When asked about timezone, simply respond with the user's timezone from the context
+- When asked about timezone, ALWAYS respond with the user's timezone from the context (NOT UTC)
 - DO NOT use any tools when responding to timezone questions
-- The timezone information is provided in the context message
-- Example response: "I'm using [User's Timezone] for all scheduling and time calculations."
+- The user's timezone is clearly specified in the "User's timezone:" field in the context message
+- NEVER respond with "UTC" unless that's actually the user's timezone
+- Look for the "User's timezone:" field in the context and use that exact value
+- Example response: "I'm using [User's Timezone from context] for all scheduling and time calculations."
+- If user timezone is "Asia/Manila", respond: "I'm using Asia/Manila for all scheduling and time calculations."
 
 ## Communication Style:
 - **Professional but Approachable**: Maintain executive assistant professionalism
@@ -160,118 +163,109 @@ Remember: You are ALWAYS acting on behalf of your authenticated user, coordinati
 ⚠️  CRITICAL: Never attempt to use tools without having ALL required parameters. If you're missing information like specific date, time, or duration, ask the colleague for these details first. ALWAYS verify you have complete information before making any tool calls.
 """
 
-class MeetingInfoExtractor:
-    """Helper class to extract and validate meeting information from conversations."""
+class LLMMeetingInfoExtractor:
+    """LLM-based meeting information extractor using the same OpenAI model."""
     
     @staticmethod
-    def extract_meeting_details(message: str, chat_history: List, current_datetime: datetime, user_timezone: str) -> Dict[str, Any]:
-        """Extract meeting details from message and chat history."""
-        details = {
-            "title": None,
-            "date": None,
-            "time": None,
-            "duration": None,
-            "start_datetime": None,
-            "end_datetime": None,
-            "description": None,
-            "location": None,
-            "attendees": [],
-            "missing_required": []
-        }
+    async def extract_meeting_details(llm, message: str, chat_history: List, current_datetime: datetime, user_timezone: str) -> Dict[str, Any]:
+        """Extract meeting details using LLM instead of regex patterns."""
         
-        # Extract from current message
-        message_lower = message.lower()
+        # Prepare conversation context
+        conversation_parts = []
+        if chat_history:
+            for msg in chat_history[-5:]:  # Last 5 messages for context
+                if hasattr(msg, 'content'):
+                    conversation_parts.append(msg.content)
+        conversation_parts.append(message)
+        conversation_text = "\n".join(conversation_parts)
         
-        # Extract duration
-        duration_match = re.search(r'(\d+)\s*(hour|hr|minute|min)', message_lower)
-        if duration_match:
-            value, unit = duration_match.groups()
-            if 'hour' in unit or 'hr' in unit:
-                details["duration"] = int(value) * 60
-            else:
-                details["duration"] = int(value)
-        
-        # Extract temporal references
-        if "tomorrow" in message_lower:
-            tomorrow = current_datetime + timedelta(days=1)
-            details["date"] = tomorrow.strftime('%Y-%m-%d')
-        elif "today" in message_lower:
-            details["date"] = current_datetime.strftime('%Y-%m-%d')
-        elif "next week" in message_lower:
-            next_week = current_datetime + timedelta(days=7)
-            details["date"] = next_week.strftime('%Y-%m-%d')
-        
-        # Extract time
-        time_match = re.search(r'(\d{1,2}):?(\d{0,2})\s*(am|pm|AM|PM)', message_lower)
-        if time_match:
-            hour, minute, period = time_match.groups()
-            hour = int(hour)
-            minute = int(minute) if minute else 0
-            if period.lower() == 'pm' and hour != 12:
-                hour += 12
-            elif period.lower() == 'am' and hour == 12:
-                hour = 0
-            details["time"] = f"{hour:02d}:{minute:02d}"
-        
-        # Extract meeting purpose/title
-        purpose_patterns = [
-            r'(?:meeting about|discuss|talk about|regarding)\s+(.+?)(?:\.|$|\n)',
-            r'(?:for|about)\s+(.+?)(?:\.|$|\n)',
-            r'(?:call|meeting)\s+(.+?)(?:\.|$|\n)'
-        ]
-        for pattern in purpose_patterns:
-            match = re.search(pattern, message_lower)
-            if match:
-                details["title"] = match.group(1).strip()
-                break
-        
-        # Check chat history for missing information
-        history_text = " ".join([msg.content for msg in chat_history if hasattr(msg, 'content')])
-        history_lower = history_text.lower()
-        
-        # Extract from history if not found in current message
-        if not details["duration"]:
-            duration_history = re.search(r'(\d+)\s*(hour|hr|minute|min)', history_lower)
-            if duration_history:
-                value, unit = duration_history.groups()
-                if 'hour' in unit or 'hr' in unit:
-                    details["duration"] = int(value) * 60
-                else:
-                    details["duration"] = int(value)
-        
-        if not details["title"]:
-            for pattern in purpose_patterns:
-                match = re.search(pattern, history_lower)
-                if match:
-                    details["title"] = match.group(1).strip()
-                    break
-        
-        # Set defaults
-        if not details["duration"]:
-            details["duration"] = 30  # Default to 30 minutes
-        
-        if not details["title"]:
-            details["title"] = "Meeting"  # Default title
-        
-        # Calculate start and end datetime if we have date and time
-        if details["date"] and details["time"]:
-            try:
+        # LLM extraction prompt
+        extraction_prompt = f"""Extract meeting information from this conversation and return ONLY valid JSON:
+
+Conversation:
+{conversation_text}
+
+Current context:
+- Date: {current_datetime.strftime('%Y-%m-%d')}
+- Time: {current_datetime.strftime('%H:%M')}
+- Timezone: {user_timezone}
+
+Extract and return JSON with these fields:
+- date: Date in YYYY-MM-DD format ("tomorrow" = {(current_datetime + timedelta(days=1)).strftime('%Y-%m-%d')})
+- time: Time in HH:MM 24-hour format ("noon"="12:00", "half past two"="14:30")
+- duration: Duration in minutes (integer)
+- title: Brief meeting purpose
+
+Rules:
+- "tomorrow" → {(current_datetime + timedelta(days=1)).strftime('%Y-%m-%d')}
+- "noon" → "12:00"
+- "half past two" → "14:30"
+- "afternoon" → "14:00"
+- "morning" → "09:00"
+- "lunchtime" → "12:00"
+- "quarter to five" → "16:45"
+- Use null for missing info
+
+Response format:
+{{"date": "2025-06-13", "time": "14:30", "duration": 60, "title": "project meeting"}}"""
+
+        try:
+            # Use the existing LLM instance
+            response = await llm.ainvoke([HumanMessage(content=extraction_prompt)])
+            
+            # Parse LLM response
+            response_text = response.content.strip()
+            
+            # Extract JSON from response
+            if not response_text.startswith('{'):
+                start = response_text.find('{')
+                end = response_text.rfind('}') + 1
+                if start >= 0 and end > start:
+                    response_text = response_text[start:end]
+            
+            llm_data = json.loads(response_text)
+            
+            # Convert to original format for compatibility
+            details = {
+                "title": llm_data.get("title", "Meeting"),
+                "date": llm_data.get("date"),
+                "time": llm_data.get("time"),
+                "duration": llm_data.get("duration", 30),
+                "start_datetime": None,
+                "end_datetime": None,
+                "description": llm_data.get("title"),
+                "location": None,
+                "attendees": [],
+                "missing_required": [],
+                "extraction_method": "llm"
+            }
+            
+            # Calculate start/end datetime
+            if details["date"] and details["time"]:
                 user_tz = pytz.timezone(user_timezone)
-                start_dt = user_tz.localize(datetime.strptime(f"{details['date']} {details['time']}", '%Y-%m-%d %H:%M'))
+                start_dt = user_tz.localize(
+                    datetime.strptime(f"{details['date']} {details['time']}", '%Y-%m-%d %H:%M')
+                )
                 details["start_datetime"] = start_dt.isoformat()
-                
                 end_dt = start_dt + timedelta(minutes=details["duration"])
                 details["end_datetime"] = end_dt.isoformat()
-            except Exception as e:
-                logger.error(f"Error calculating datetime: {e}")
-        
-        # Identify missing required information
-        required_fields = ["date", "time"]
-        for field in required_fields:
-            if not details[field]:
-                details["missing_required"].append(field)
-        
-        return details
+            
+            # Identify missing fields
+            required_fields = ["date", "time"]
+            details["missing_required"] = [field for field in required_fields if not details[field]]
+            
+            logger.info(f"🧠 LLM extraction successful: {details}")
+            return details
+            
+        except Exception as e:
+            logger.error(f"❌ LLM extraction failed: {e}")
+            # Fallback to basic structure if LLM fails
+            return {
+                "title": "Meeting", "date": None, "time": None, "duration": 30,
+                "start_datetime": None, "end_datetime": None, "description": None,
+                "location": None, "attendees": [], "missing_required": ["date", "time"],
+                "extraction_method": "fallback"
+            }
     
     @staticmethod
     def _is_valid_iso_datetime(datetime_str: str) -> bool:
@@ -380,36 +374,116 @@ class ExecutiveAssistantAgent:
         
         logger.info("Executive Assistant Agent initialized successfully")
     
-    def _analyze_conversation_context(self, chat_history: List, message: str) -> Dict[str, Any]:
-        """Analyze conversation context to understand what information is already available."""
+    async def _analyze_conversation_context(self, chat_history: List, message: str) -> Dict[str, Any]:
+        """Analyze conversation context using LLM for nuanced understanding."""
+        
+        # Prepare conversation for LLM analysis
+        conversation_parts = []
+        if chat_history:
+            for msg in chat_history[-10:]:  # Last 10 messages for context
+                if hasattr(msg, 'content'):
+                    conversation_parts.append(msg.content)
+        conversation_parts.append(message)
+        conversation_text = "\n".join(conversation_parts)
+        
+        # LLM analysis prompt
+        analysis_prompt = f"""Analyze this conversation and return ONLY valid JSON with conversation context:
+
+Conversation:
+{conversation_text}
+
+Analyze and return JSON with these boolean fields:
+- has_meeting_request: Is there a request to schedule/arrange a meeting? (includes "sync up", "catch up", "chat", etc.)
+- has_date_preference: Is there a specific date mentioned or preferred?
+- has_time_preference: Is there a specific time mentioned or preferred?
+- has_duration: Is meeting duration mentioned or implied?
+- has_title: Is there a meeting topic/purpose mentioned?
+- has_timezone_question: Is the user asking about timezone/time zone?
+- is_negative_response: Is this a negative response (declining, not available, etc.)?
+- is_conditional: Is this a conditional statement (if/maybe/perhaps)?
+- urgency_level: "low", "medium", or "high"
+- confidence: Your confidence in this analysis (0.0-1.0)
+
+Determine conversation_stage:
+- "timezone_inquiry": Asking about timezone
+- "initial": No clear meeting request yet
+- "gathering_time": Has meeting request, needs time details
+- "gathering_duration": Has time, needs duration
+- "ready_to_schedule": Has enough info to schedule
+- "declining": User is declining or unavailable
+- "conditional": User is expressing conditional availability
+
+Response format:
+{{"has_meeting_request": true, "has_date_preference": false, "has_time_preference": true, "has_duration": false, "has_title": true, "has_timezone_question": false, "is_negative_response": false, "is_conditional": false, "urgency_level": "medium", "conversation_stage": "gathering_duration", "confidence": 0.85}}"""
+
+        try:
+            # Use LLM for sophisticated analysis
+            response = await self.llm.ainvoke([HumanMessage(content=analysis_prompt)])
+            
+            # Parse LLM response
+            response_text = response.content.strip()
+            if not response_text.startswith('{'):
+                start = response_text.find('{')
+                end = response_text.rfind('}') + 1
+                if start >= 0 and end > start:
+                    response_text = response_text[start:end]
+            
+            llm_context = json.loads(response_text)
+            
+            # Add analysis method info
+            llm_context["analysis_method"] = "llm"
+            llm_context["mentioned_keywords"] = []  # Deprecated but kept for compatibility
+            
+            logger.info(f"🧠 LLM context analysis: {llm_context}")
+            return llm_context
+            
+        except Exception as e:
+            logger.error(f"❌ LLM context analysis failed: {e}")
+            # Fallback to original keyword-based analysis
+            return self._analyze_conversation_context_fallback(chat_history, message)
+    
+    def _analyze_conversation_context_fallback(self, chat_history: List, message: str) -> Dict[str, Any]:
+        """Fallback keyword-based context analysis if LLM fails."""
         context = {
             "has_meeting_request": False,
             "has_date_preference": False,
             "has_time_preference": False,
             "has_duration": False,
             "has_title": False,
+            "has_timezone_question": False,
+            "is_negative_response": False,
+            "is_conditional": False,
+            "urgency_level": "medium",
             "conversation_stage": "initial",
-            "mentioned_keywords": []
+            "mentioned_keywords": [],
+            "analysis_method": "fallback",
+            "confidence": 0.5
         }
         
         # Combine all messages for analysis
         all_text = message.lower()
         if chat_history:
-            history_text = " ".join([msg.content.lower() for msg in chat_history if hasattr(msg, 'content')])
+            history_text = " ".join([msg.content for msg in chat_history if hasattr(msg, 'content')])
             all_text = history_text + " " + all_text
         
-        # Analyze content
-        meeting_keywords = ["meeting", "schedule", "appointment", "book", "calendar", "availability"]
+        # Analyze content with keywords
+        meeting_keywords = ["meeting", "schedule", "appointment", "book", "calendar", "availability", "sync up", "catch up", "chat"]
         time_keywords = ["tomorrow", "today", "next week", "monday", "tuesday", "wednesday", "thursday", "friday", "am", "pm"]
         duration_keywords = ["hour", "hours", "minute", "minutes", "min", "hr"]
+        timezone_keywords = ["timezone", "time zone", "tz", "what timezone", "which timezone", "timezone are you using"]
         
-        context["mentioned_keywords"] = [keyword for keyword in meeting_keywords + time_keywords + duration_keywords if keyword in all_text]
+        all_keywords = meeting_keywords + time_keywords + duration_keywords + timezone_keywords
+        
+        context["mentioned_keywords"] = [keyword for keyword in all_keywords if keyword in all_text]
         context["has_meeting_request"] = any(keyword in all_text for keyword in meeting_keywords)
         context["has_time_preference"] = any(keyword in all_text for keyword in time_keywords)
         context["has_duration"] = any(keyword in all_text for keyword in duration_keywords)
+        context["has_timezone_question"] = any(keyword in all_text for keyword in timezone_keywords)
         
         # Determine conversation stage
-        if not context["has_meeting_request"]:
+        if context["has_timezone_question"]:
+            context["conversation_stage"] = "timezone_inquiry"
+        elif not context["has_meeting_request"]:
             context["conversation_stage"] = "initial"
         elif context["has_meeting_request"] and not context["has_time_preference"]:
             context["conversation_stage"] = "gathering_time"
@@ -425,7 +499,7 @@ class ExecutiveAssistantAgent:
         blocking_result = {"should_block": False, "reason": "", "missing_info": []}
         
         # First check if this is a timezone-related question
-        if any(word in conversation_context.get("mentioned_keywords", []) for word in ["timezone", "time zone", "tz"]):
+        if conversation_context.get("has_timezone_question", False) or conversation_context.get("conversation_stage") == "timezone_inquiry":
             blocking_result.update({
                 "should_block": True,
                 "reason": "This is a timezone-related question. No tools should be used.",
@@ -490,18 +564,59 @@ class ExecutiveAssistantAgent:
         response = await self.llm.ainvoke(gathering_prompt)
         return {"question": response.content, "missing_info": missing_info}
     
+    async def _extract_missing_params_llm(self, error_str: str) -> List[str]:
+        """Extract missing parameters from error message using LLM."""
+        
+        extraction_prompt = f"""Extract missing parameter names from this error message and return ONLY a JSON list:
+
+Error message: "{error_str}"
+
+Extract the names of missing required parameters/arguments. Return only the parameter names as a JSON list.
+
+Examples:
+- "missing required arguments: start_datetime, end_datetime" → ["start_datetime", "end_datetime"]
+- "missing required argument: title" → ["title"]
+- "TypeError: missing 2 required positional arguments: 'start' and 'end'" → ["start", "end"]
+
+Return only the JSON list, no other text:"""
+
+        try:
+            response = await self.llm.ainvoke([HumanMessage(content=extraction_prompt)])
+            response_text = response.content.strip()
+            
+            # Extract JSON array from response
+            if not response_text.startswith('['):
+                start = response_text.find('[')
+                end = response_text.rfind(']') + 1
+                if start >= 0 and end > start:
+                    response_text = response_text[start:end]
+            
+            missing_params = json.loads(response_text)
+            
+            if isinstance(missing_params, list):
+                logger.info(f"🧠 LLM error parsing: {missing_params}")
+                return missing_params
+            else:
+                return []
+                
+        except Exception as e:
+            logger.error(f"❌ LLM error parsing failed: {e}")
+            return []
+    
     async def _handle_tool_execution_error(self, error: Exception, tool_name: str, tool_input: Dict[str, Any], 
                                          chat_history: List, conversation_context: Dict[str, Any]) -> Dict[str, Any]:
         """Handle tool execution errors by gathering missing information."""
         error_str = str(error)
         missing_info = []
         
-        # Extract missing parameters from error message
+        # Extract missing parameters from error message using LLM
         if "missing" in error_str.lower() and "required" in error_str.lower():
-            # Parse error message to extract missing parameters
-            missing_params = re.findall(r"missing.*?required.*?arguments?:?\s*([^:]+)", error_str, re.IGNORECASE)
-            if missing_params:
-                missing_info = [param.strip() for param in missing_params[0].split(',')]
+            missing_info = await self._extract_missing_params_llm(error_str)
+            if not missing_info:
+                # Fallback to regex if LLM fails
+                missing_params = re.findall(r"missing.*?required.*?arguments?:?\s*([^:]+)", error_str, re.IGNORECASE)
+                if missing_params:
+                    missing_info = [param.strip() for param in missing_params[0].split(',')]
         
         if missing_info:
             # Gather missing inputs through conversation
@@ -551,18 +666,23 @@ class ExecutiveAssistantAgent:
             user_tz = pytz.timezone(user_timezone)
             current_datetime = datetime.now(user_tz)
             
-            # Analyze conversation context
-            conversation_context = self._analyze_conversation_context(chat_history, message)
+            # Analyze conversation context using LLM
+            conversation_context = await self._analyze_conversation_context(chat_history, message)
             logger.info(f"Conversation context: {conversation_context}")
             
-            # Extract meeting details from message and history
-            meeting_details = MeetingInfoExtractor.extract_meeting_details(
-                message, chat_history, current_datetime, user_timezone
+            # Extract meeting details from message and history using LLM
+            meeting_details = await LLMMeetingInfoExtractor.extract_meeting_details(
+                self.llm, message, chat_history, current_datetime, user_timezone
             )
             logger.info(f"Extracted meeting details: {meeting_details}")
             
             # Enhanced context message with validation prompts
             contextualized_message = f"""Acting as the executive assistant for {user_name}, respond to this colleague message: "{message}"
+
+⏰ TIMEZONE CONTEXT - CRITICAL FOR TIMEZONE QUESTIONS:
+- User's timezone: {user_timezone}
+- When asked about timezone, respond with: "{user_timezone}"
+- NEVER say "UTC" unless that's literally the user's timezone
 
 Current Time Context:
 - Current datetime: {current_datetime.strftime('%Y-%m-%d %H:%M:%S %Z')}
@@ -579,6 +699,7 @@ Conversation Analysis:
 - Has meeting request: {conversation_context['has_meeting_request']}
 - Has time preference: {conversation_context['has_time_preference']}
 - Has duration: {conversation_context['has_duration']}
+- Has timezone question: {conversation_context['has_timezone_question']}
 - Keywords mentioned: {', '.join(conversation_context['mentioned_keywords'])}
 
 Extracted Meeting Information:
@@ -597,6 +718,10 @@ CRITICAL VALIDATION RULES:
 - get_events: MUST have start_datetime AND end_datetime
 
 🚫 If ANY required parameter is missing, DO NOT call the tool. Instead, ask the colleague for the missing information.
+
+✅ If you have ALL required information (extracted meeting details show start_datetime and end_datetime are calculated), proceed with tool calls:
+- Use check_availability to check the user's calendar
+- Use create_event to schedule the meeting once availability is confirmed
 
 Important Guidelines:
 - You are {user_name}'s executive assistant
@@ -691,9 +816,9 @@ Important Guidelines:
             # Add AI response to memory
             await memory.add_message(AIMessage(content=response))
             
-            # Analyze the response for intent and extracted information
-            intent = self._analyze_intent(message, tools_used)
-            extracted_info = self._extract_information(message, response, tools_used, user_id)
+            # Analyze the response for intent and extracted information using LLM
+            intent = await self._analyze_intent(message, tools_used)
+            extracted_info = await self._extract_information(message, response, tools_used, user_id)
             
             # Add current datetime and validation info to extracted info
             extracted_info.update({
@@ -760,11 +885,10 @@ Important Guidelines:
                 "contact_id": contact_id
             }
     
-    def _analyze_intent(self, message: str, tools_used: List[Dict]) -> str:
-        """Analyze the colleague's intent based on message and tools used in executive assistant context."""
-        message_lower = message.lower()
+    async def _analyze_intent(self, message: str, tools_used: List[Dict]) -> str:
+        """Analyze the colleague's intent using LLM for sophisticated understanding."""
         
-        # Check what tools were actually used
+        # Check what tools were actually used first (highest confidence)
         tool_names = [tool["tool"] for tool in tools_used]
         
         if "create_event" in tool_names:
@@ -775,7 +899,55 @@ Important Guidelines:
             return "viewing_user_calendar"
         elif "list_calendars" in tool_names:
             return "accessing_user_calendars"
-        elif any(word in message_lower for word in ["schedule", "meeting", "appointment", "book"]):
+        
+        # Use LLM for intent analysis when no tools were used
+        intent_prompt = f"""Analyze this message and determine the primary intent. Return ONLY the intent category:
+
+Message: "{message}"
+
+Intent categories:
+- colleague_meeting_request: Requesting to schedule a meeting/appointment
+- colleague_availability_inquiry: Asking about availability or free time
+- colleague_meeting_modification: Wanting to cancel, reschedule, or change existing meeting
+- colleague_calendar_inquiry: Asking about calendar, events, or schedule
+- colleague_urgent_request: Urgent or time-sensitive request
+- colleague_conditional_request: Conditional request (if/maybe/perhaps)
+- colleague_declining: Declining or expressing unavailability
+- colleague_greeting: Greeting or social pleasantries
+- colleague_general_conversation: General conversation or unclear intent
+
+Consider context, tone, and nuanced language. Return only the category name."""
+
+        try:
+            # Use LLM for intent analysis
+            response = await self.llm.ainvoke([HumanMessage(content=intent_prompt)])
+            intent = response.content.strip()
+            
+            # Validate the intent is one of our expected categories
+            valid_intents = [
+                "colleague_meeting_request", "colleague_availability_inquiry", 
+                "colleague_meeting_modification", "colleague_calendar_inquiry",
+                "colleague_urgent_request", "colleague_conditional_request",
+                "colleague_declining", "colleague_greeting", "colleague_general_conversation"
+            ]
+            
+            if intent in valid_intents:
+                logger.info(f"🧠 LLM intent analysis: {intent}")
+                return intent
+            else:
+                # Fallback if LLM returns unexpected intent
+                return self._analyze_intent_fallback(message)
+                
+        except Exception as e:
+            logger.error(f"❌ LLM intent analysis failed: {e}")
+            # Fallback to keyword-based analysis
+            return self._analyze_intent_fallback(message)
+    
+    def _analyze_intent_fallback(self, message: str) -> str:
+        """Fallback keyword-based intent analysis if LLM fails."""
+        message_lower = message.lower()
+        
+        if any(word in message_lower for word in ["schedule", "meeting", "appointment", "book", "sync up", "catch up"]):
             return "colleague_meeting_request"
         elif any(word in message_lower for word in ["available", "availability", "free", "busy"]):
             return "colleague_availability_inquiry"
@@ -783,11 +955,17 @@ Important Guidelines:
             return "colleague_meeting_modification"
         elif any(word in message_lower for word in ["calendar", "events", "meetings", "agenda"]):
             return "colleague_calendar_inquiry"
+        elif any(word in message_lower for word in ["urgent", "asap", "immediately", "now"]):
+            return "colleague_urgent_request"
+        elif any(word in message_lower for word in ["hello", "hi", "hey", "good morning", "good afternoon"]):
+            return "colleague_greeting"
         else:
             return "colleague_general_conversation"
     
-    def _extract_information(self, message: str, response: str, tools_used: List[Dict], user_id: str) -> Dict[str, Any]:
-        """Extract structured information from the executive assistant conversation."""
+    async def _extract_information(self, message: str, response: str, tools_used: List[Dict], user_id: str) -> Dict[str, Any]:
+        """Extract structured information using LLM for rich semantic understanding."""
+        
+        # Base information
         extracted = {
             "message_timestamp": datetime.now().isoformat(),
             "tools_invoked": len(tools_used),
@@ -796,43 +974,56 @@ Important Guidelines:
             "executive_assistant_interaction": True
         }
         
-        message_lower = message.lower()
+        # Use LLM for semantic information extraction
+        extraction_prompt = f"""Extract structured information from this conversation and return ONLY valid JSON:
+
+User Message: "{message}"
+Assistant Response: "{response}"
+
+Extract and return JSON with these fields:
+- temporal_reference: Any time reference mentioned ("today", "tomorrow", "next_week", "monday", etc.)
+- duration_mentioned: Duration type if mentioned ("hours", "minutes", "days", null)
+- urgency_indicators: List of urgency words/phrases found
+- participants_mentioned: Boolean - are other people mentioned?
+- location_mentioned: Boolean - is a location/place mentioned?
+- meeting_type: Type of meeting if identifiable ("standup", "review", "sync", "presentation", etc.)
+- sentiment: Overall sentiment ("positive", "neutral", "negative")
+- complexity_level: Conversation complexity ("simple", "moderate", "complex")
+- key_entities: List of important entities mentioned (people, places, topics)
+- action_items: List of implied action items or next steps
+- confidence: Your confidence in this extraction (0.0-1.0)
+
+Response format:
+{{"temporal_reference": "tomorrow", "duration_mentioned": "hours", "urgency_indicators": ["asap"], "participants_mentioned": true, "location_mentioned": false, "meeting_type": "sync", "sentiment": "positive", "complexity_level": "moderate", "key_entities": ["project review", "John"], "action_items": ["schedule meeting", "send calendar invite"], "confidence": 0.85}}"""
+
+        try:
+            # Use LLM for rich information extraction
+            response_llm = await self.llm.ainvoke([HumanMessage(content=extraction_prompt)])
+            
+            # Parse LLM response
+            response_text = response_llm.content.strip()
+            if not response_text.startswith('{'):
+                start = response_text.find('{')
+                end = response_text.rfind('}') + 1
+                if start >= 0 and end > start:
+                    response_text = response_text[start:end]
+            
+            llm_extracted = json.loads(response_text)
+            
+            # Merge LLM extraction with base information
+            extracted.update(llm_extracted)
+            extracted["extraction_method"] = "llm"
+            
+            logger.info(f"🧠 LLM information extraction: {llm_extracted}")
+            
+        except Exception as e:
+            logger.error(f"❌ LLM information extraction failed: {e}")
+            # Fallback to keyword-based extraction
+            fallback_info = self._extract_information_fallback(message, response)
+            extracted.update(fallback_info)
+            extracted["extraction_method"] = "fallback"
         
-        # Extract temporal references
-        temporal_keywords = {
-            "today": "today",
-            "tomorrow": "tomorrow", 
-            "yesterday": "yesterday",
-            "next week": "next_week",
-            "this week": "this_week",
-            "monday": "monday",
-            "tuesday": "tuesday",
-            "wednesday": "wednesday",
-            "thursday": "thursday",
-            "friday": "friday",
-            "saturday": "saturday",
-            "sunday": "sunday"
-        }
-        
-        for keyword, value in temporal_keywords.items():
-            if keyword in message_lower:
-                extracted["temporal_reference"] = value
-                break
-        
-        # Extract duration indicators
-        if any(word in message_lower for word in ["hour", "hours"]):
-            extracted["duration_mentioned"] = "hours"
-        elif any(word in message_lower for word in ["minute", "minutes", "min"]):
-            extracted["duration_mentioned"] = "minutes"
-        
-        # Extract meeting-related information
-        if any(word in message_lower for word in ["with", "participant", "attendee"]):
-            extracted["participants_mentioned"] = True
-        
-        if "location" in message_lower or "where" in message_lower:
-            extracted["location_mentioned"] = True
-        
-        # Extract information from tool outputs in executive assistant context
+        # Extract information from tool outputs (always do this)
         for tool in tools_used:
             if tool["tool"] == "create_event":
                 extracted["meeting_created_for_user"] = True
@@ -857,6 +1048,48 @@ Important Guidelines:
                     extracted["user_time_slot_available"] = False
         
         return extracted
+    
+    def _extract_information_fallback(self, message: str, response: str) -> Dict[str, Any]:
+        """Fallback keyword-based information extraction if LLM fails."""
+        fallback = {}
+        message_lower = message.lower()
+        
+        # Extract temporal references
+        temporal_keywords = {
+            "today": "today", "tomorrow": "tomorrow", "yesterday": "yesterday",
+            "next week": "next_week", "this week": "this_week",
+            "monday": "monday", "tuesday": "tuesday", "wednesday": "wednesday",
+            "thursday": "thursday", "friday": "friday", "saturday": "saturday", "sunday": "sunday"
+        }
+        
+        for keyword, value in temporal_keywords.items():
+            if keyword in message_lower:
+                fallback["temporal_reference"] = value
+                break
+        
+        # Extract duration indicators
+        if any(word in message_lower for word in ["hour", "hours"]):
+            fallback["duration_mentioned"] = "hours"
+        elif any(word in message_lower for word in ["minute", "minutes", "min"]):
+            fallback["duration_mentioned"] = "minutes"
+        
+        # Extract meeting-related information
+        fallback["participants_mentioned"] = any(word in message_lower for word in ["with", "participant", "attendee"])
+        fallback["location_mentioned"] = any(word in message_lower for word in ["location", "where", "room", "office"])
+        
+        # Basic sentiment analysis
+        positive_words = ["great", "perfect", "excellent", "good", "thanks", "please"]
+        negative_words = ["can't", "unable", "busy", "unavailable", "sorry", "problem"]
+        
+        if any(word in message_lower for word in positive_words):
+            fallback["sentiment"] = "positive"
+        elif any(word in message_lower for word in negative_words):
+            fallback["sentiment"] = "negative"
+        else:
+            fallback["sentiment"] = "neutral"
+        
+        fallback["confidence"] = 0.5
+        return fallback
 
 # Agent factory function
 def create_agent(openai_api_key: str = None, model_name: str = None, temperature: float = None) -> ExecutiveAssistantAgent:

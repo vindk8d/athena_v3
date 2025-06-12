@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 from typing import Optional, Dict, Any, List
 import logging
 from datetime import datetime
+import pytz
 
 from config import Config
 from agent import get_agent, reset_agent
@@ -241,6 +242,7 @@ async def simple_process_message(request: ProcessMessageRequest):
         
         # Create user name for response
         user_name = "your user"
+        user_timezone = "UTC"
         if user_details:
             first_name = user_details.get('first_name', '')
             last_name = user_details.get('last_name', '')
@@ -248,15 +250,22 @@ async def simple_process_message(request: ProcessMessageRequest):
                 user_name = f"{first_name} {last_name}"
             elif first_name:
                 user_name = first_name
+            
+            # Get user's timezone
+            user_timezone = user_details.get('timezone', 'UTC')
+        
+        # Get current datetime in user's timezone
+        user_tz = pytz.timezone(user_timezone)
+        current_datetime = datetime.now(user_tz)
         
         # Simple executive assistant response without tools
-        response = f"Hello! I'm {user_name}'s executive assistant. I received your message: '{colleague_message}'. I'm currently running in simple mode without calendar access."
+        response = f"Hello! I'm {user_name}'s executive assistant. I received your message: '{colleague_message}'. I'm currently running in simple mode without calendar access. The current time is {current_datetime.strftime('%Y-%m-%d %H:%M:%S %Z')}."
         
         # Basic intent detection
         intent = "colleague_general_conversation"
         if any(word in colleague_message.lower() for word in ["schedule", "meeting", "appointment"]):
             intent = "colleague_meeting_request"
-            response = f"I understand you want to schedule a meeting with {user_name}. I'll need calendar access to check {user_name}'s availability and coordinate the meeting."
+            response = f"I understand you want to schedule a meeting with {user_name}. I'll need calendar access to check {user_name}'s availability and coordinate the meeting. The current time is {current_datetime.strftime('%Y-%m-%d %H:%M:%S %Z')}."
         
         return ProcessMessageResponse(
             response=response,
@@ -264,7 +273,12 @@ async def simple_process_message(request: ProcessMessageRequest):
             user_id=user_id,
             contact_id=contact_id,
             intent=intent,
-            extracted_info={"simple_mode": True, "executive_assistant_mode": True},
+            extracted_info={
+                "simple_mode": True, 
+                "executive_assistant_mode": True,
+                "current_datetime": current_datetime.isoformat(),
+                "user_timezone": user_timezone
+            },
             tools_used=[]
         )
         
@@ -320,15 +334,15 @@ async def sync_calendars(request: Request):
             logger.error(f"Error managing user details: {e}")
             return {"success": False, "error": f"Error managing user details: {str(e)}"}
         
-        # Get OAuth tokens from user_details
+        # Get OAuth tokens from user_auth_credentials
         try:
-            user_details = supabase.table('user_details').select('oauth_access_token, oauth_refresh_token').eq('user_id', user_id).execute()
-            if not user_details.data or not user_details.data[0].get('oauth_access_token'):
+            auth_credentials = supabase.table('user_auth_credentials').select('access_token, refresh_token').eq('user_id', user_id).eq('provider', 'google').execute()
+            if not auth_credentials.data or not auth_credentials.data[0].get('access_token'):
                 return {"success": False, "error": "No OAuth tokens found for user"}
             
-            oauth_data = user_details.data[0]
-            access_token = oauth_data['oauth_access_token']
-            refresh_token = oauth_data.get('oauth_refresh_token')
+            oauth_data = auth_credentials.data[0]
+            access_token = oauth_data['access_token']
+            refresh_token = oauth_data.get('refresh_token')
             
             # Initialize calendar service with OAuth tokens
             set_calendar_service(access_token, refresh_token)

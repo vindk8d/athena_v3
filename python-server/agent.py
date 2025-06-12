@@ -7,6 +7,7 @@ from langchain.schema.runnable import RunnablePassthrough, RunnableLambda
 from langchain.tools import Tool
 import logging
 from datetime import datetime, timedelta
+import pytz
 import json
 
 from memory import MemoryManager, memory_manager
@@ -17,6 +18,15 @@ logger = logging.getLogger(__name__)
 
 # Enhanced system prompt for the single-user executive assistant
 EXECUTIVE_ASSISTANT_PROMPT = """You are Athena, a professional executive assistant AI that acts on behalf of your authenticated user to coordinate meetings and manage schedules with their colleagues.
+
+## Current Time Context:
+- The current datetime will be provided in each message
+- Always use the provided datetime as the reference point for all scheduling
+- Never make up or hallucinate dates - use the provided datetime
+- When someone mentions "tomorrow", calculate it from the provided datetime
+- When someone mentions "next week", calculate it from the provided datetime
+- Always work in the user's timezone (provided in context)
+- When reporting the current date/time, ALWAYS include the timezone being used
 
 ## Your Identity and Role:
 - You are the **executive assistant** of the authenticated user in the system
@@ -190,8 +200,16 @@ class ExecutiveAssistantAgent:
                 # Extract timezone if available
                 user_timezone = user_details.get('timezone', 'UTC')
             
+            # Get current datetime in user's timezone
+            user_tz = pytz.timezone(user_timezone)
+            current_datetime = datetime.now(user_tz)
+            
             # Add context to the message for the executive assistant
             contextualized_message = f"""Acting as the executive assistant for {user_name}, respond to this colleague message: "{message}"
+
+Current Time Context:
+- Current datetime: {current_datetime.strftime('%Y-%m-%d %H:%M:%S %Z')}
+- User's timezone: {user_timezone}
 
 User Details:
 - User ID: {user_id}
@@ -206,7 +224,8 @@ Important Guidelines:
 - Before using any tools, ensure you have all required information (date, time, duration)
 - Calculate end_datetime from start_datetime + duration
 - Use {user_timezone} timezone for all datetime calculations
-- The calendar list is pre-configured - no need to list calendars manually"""
+- The calendar list is pre-configured - no need to list calendars manually
+- Always use the current datetime ({current_datetime.strftime('%Y-%m-%d %H:%M:%S %Z')}) as reference for relative time expressions"""
             
             # Add current colleague message to memory
             await memory.add_message(HumanMessage(content=message))
@@ -240,6 +259,10 @@ Important Guidelines:
             # Analyze the response for intent and extracted information
             intent = self._analyze_intent(message, tools_used)
             extracted_info = self._extract_information(message, response, tools_used, user_id)
+            
+            # Add current datetime to extracted info
+            extracted_info["current_datetime"] = current_datetime.isoformat()
+            extracted_info["user_timezone"] = user_timezone
             
             return {
                 "response": response,

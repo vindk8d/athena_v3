@@ -59,12 +59,29 @@ class CheckAvailabilityInput(BaseModel):
     start_datetime: str = Field(description="Start datetime in ISO format with timezone (e.g., '2024-01-15T09:00:00+08:00')")
     end_datetime: str = Field(description="End datetime in ISO format with timezone (e.g., '2024-01-15T10:00:00+08:00')")
     duration_minutes: Optional[int] = Field(default=30, description="Meeting duration in minutes for context")
+    
+    class Config:
+        schema_extra = {
+            "example": {
+                "start_datetime": "2024-01-15T09:00:00+08:00",
+                "end_datetime": "2024-01-15T10:00:00+08:00",
+                "duration_minutes": 30
+            }
+        }
 
 # Define input model for getting events
 class GetEventsInput(BaseModel):
     """Input model for getting calendar events."""
     start_datetime: str = Field(description="Start datetime in ISO format with timezone")
     end_datetime: str = Field(description="End datetime in ISO format with timezone")
+    
+    class Config:
+        schema_extra = {
+            "example": {
+                "start_datetime": "2024-01-15T00:00:00+08:00",
+                "end_datetime": "2024-01-15T23:59:59+08:00"
+            }
+        }
 
 # Define input model for creating events
 class CreateEventInput(BaseModel):
@@ -75,6 +92,18 @@ class CreateEventInput(BaseModel):
     attendee_emails: Optional[List[str]] = Field(default=[], description="List of attendee email addresses")
     description: Optional[str] = Field(default="", description="Event description")
     location: Optional[str] = Field(default="", description="Event location")
+    
+    class Config:
+        schema_extra = {
+            "example": {
+                "title": "Team Meeting",
+                "start_datetime": "2024-01-15T09:00:00+08:00",
+                "end_datetime": "2024-01-15T10:00:00+08:00",
+                "attendee_emails": ["colleague@example.com"],
+                "description": "Weekly team sync",
+                "location": "Conference Room A"
+            }
+        }
 
 # Define CalendarService class for interacting with Google Calendar API
 class CalendarService:
@@ -375,12 +404,20 @@ class GetEventsTool(BaseTool):
     """Tool to get events from user's calendars for a date range."""
     
     name = "get_events"
-    description = "Get events from the user's calendars for a date range. Useful for checking what meetings are scheduled."
+    description = """Get events from the user's calendars for a date range. 
+    REQUIRED PARAMETERS: start_datetime and end_datetime in ISO format with timezone.
+    NEVER call this tool without both parameters properly formatted."""
     args_schema = GetEventsInput
     
     def _run(self, start_datetime: str, end_datetime: str) -> str:
-        """Execute the tool."""
+        """Execute the tool with enhanced validation."""
         try:
+            # Validate required inputs
+            start_datetime = validate_datetime_input(start_datetime, "start_datetime")
+            end_datetime = validate_datetime_input(end_datetime, "end_datetime")
+            
+            logger.info(f"GetEventsTool called with start_datetime={start_datetime}, end_datetime={end_datetime}")
+            
             user_id = get_current_user_id()
             calendar_ids = get_included_calendars(user_id)
             
@@ -417,6 +454,9 @@ class GetEventsTool(BaseTool):
             
             return result
             
+        except ValueError as e:
+            logger.error(f"Validation error in GetEventsTool: {e}")
+            return f"❌ Validation Error: {str(e)}. Please provide valid start_datetime and end_datetime in ISO format with timezone."
         except Exception as e:
             logger.error(f"Error getting events: {e}")
             return f"Error getting events: {str(e)}"
@@ -476,33 +516,35 @@ class CheckAvailabilityTool(BaseTool):
     """Tool to check availability across user's configured calendars."""
     
     name = "check_availability"
-    description = "Check if a time slot is free across the user's configured calendars. Requires start_datetime and end_datetime in ISO format with timezone."
+    description = """Check if a time slot is free across the user's configured calendars. 
+    REQUIRED PARAMETERS: start_datetime and end_datetime in ISO format with timezone.
+    NEVER call this tool without both parameters properly formatted."""
     args_schema = CheckAvailabilityInput
     
     def _run(self, start_datetime: str, end_datetime: str = None, duration_minutes: int = 30) -> str:
-        """Execute the tool."""
+        """Execute the tool with enhanced validation."""
         try:
+            # Validate required inputs
+            start_datetime = validate_datetime_input(start_datetime, "start_datetime")
+            
+            # Calculate end_datetime if not provided
+            if end_datetime is None:
+                end_datetime = calculate_end_datetime(start_datetime, duration_minutes)
+            else:
+                end_datetime = validate_datetime_input(end_datetime, "end_datetime")
+            
+            logger.info(f"CheckAvailabilityTool called with start_datetime={start_datetime}, end_datetime={end_datetime}")
+            
             user_id = get_current_user_id()
             user_timezone = get_user_timezone(user_id)
             
             # Get current datetime in user's timezone
             current_datetime = datetime.now(pytz.timezone(user_timezone))
             logger.info(f"Current datetime ({user_timezone}): {current_datetime.isoformat()}")
-            logger.info(f"Current date: {current_datetime.date()}")
-            logger.info(f"Current time: {current_datetime.time()}")
-            
-            # Calculate end_datetime if not provided
-            if end_datetime is None:
-                end_datetime = calculate_end_datetime(start_datetime, duration_minutes)
             
             # Parse the start datetime to check if it's in the past
-            # Ensure the input datetime has timezone info
-            if 'Z' in start_datetime:
-                start_datetime = start_datetime.replace('Z', '+00:00')
             start_dt = datetime.fromisoformat(start_datetime)
             logger.info(f"Requested start datetime: {start_dt.isoformat()}")
-            logger.info(f"Requested start date: {start_dt.date()}")
-            logger.info(f"Requested start time: {start_dt.time()}")
             
             if start_dt < current_datetime:
                 logger.warning(f"Attempted to check availability for past time: {start_datetime}")
@@ -524,6 +566,9 @@ class CheckAvailabilityTool(BaseTool):
                     result += f"- Busy from {conflict['start']} to {conflict['end']}\n"
                 return result
             
+        except ValueError as e:
+            logger.error(f"Validation error in CheckAvailabilityTool: {e}")
+            return f"❌ Validation Error: {str(e)}. Please provide valid start_datetime and end_datetime in ISO format with timezone."
         except Exception as e:
             logger.error(f"Error checking availability: {e}")
             return f"Error checking availability: {str(e)}"
@@ -532,30 +577,32 @@ class CreateEventTool(BaseTool):
     """Tool to create a new calendar event on the user's primary calendar."""
     
     name = "create_event"
-    description = "Create a new calendar event on the user's primary calendar. Use this to schedule meetings after confirming availability."
+    description = """Create a new calendar event on the user's primary calendar. 
+    REQUIRED PARAMETERS: title, start_datetime, and end_datetime.
+    NEVER call this tool without all required parameters properly formatted."""
     args_schema = CreateEventInput
     
     def _run(self, title: str, start_datetime: str, end_datetime: str, 
             attendee_emails: List[str] = None, description: str = "", location: str = "") -> str:
-        """Execute the tool."""
+        """Execute the tool with enhanced validation."""
         try:
+            # Validate required inputs
+            title = validate_required_string(title, "title")
+            start_datetime = validate_datetime_input(start_datetime, "start_datetime")
+            end_datetime = validate_datetime_input(end_datetime, "end_datetime")
+            
+            logger.info(f"CreateEventTool called with title='{title}', start_datetime={start_datetime}, end_datetime={end_datetime}")
+            
             user_id = get_current_user_id()
             user_timezone = get_user_timezone(user_id)
             
             # Get current datetime in user's timezone
             current_datetime = datetime.now(pytz.timezone(user_timezone))
             logger.info(f"Current datetime ({user_timezone}): {current_datetime.isoformat()}")
-            logger.info(f"Current date: {current_datetime.date()}")
-            logger.info(f"Current time: {current_datetime.time()}")
             
             # Parse the start datetime to check if it's in the past
-            # Ensure the input datetime has timezone info
-            if 'Z' in start_datetime:
-                start_datetime = start_datetime.replace('Z', '+00:00')
             start_dt = datetime.fromisoformat(start_datetime)
             logger.info(f"Requested start datetime: {start_dt.isoformat()}")
-            logger.info(f"Requested start date: {start_dt.date()}")
-            logger.info(f"Requested start time: {start_dt.time()}")
             
             if start_dt < current_datetime:
                 logger.warning(f"Attempted to create event in the past: {start_datetime}")
@@ -590,9 +637,39 @@ class CreateEventTool(BaseTool):
             
             return result
             
+        except ValueError as e:
+            logger.error(f"Validation error in CreateEventTool: {e}")
+            return f"❌ Validation Error: {str(e)}. Please provide valid title, start_datetime, and end_datetime."
         except Exception as e:
             logger.error(f"Error creating event: {e}")
             return f"Error creating event: {str(e)}"
+
+def validate_datetime_input(datetime_str: str, field_name: str) -> str:
+    """Validate and normalize datetime input."""
+    if not datetime_str or not datetime_str.strip():
+        raise ValueError(f"{field_name} is required and cannot be empty")
+    
+    try:
+        # Normalize timezone format
+        if 'Z' in datetime_str:
+            datetime_str = datetime_str.replace('Z', '+00:00')
+        
+        # Try to parse as ISO datetime
+        parsed_dt = datetime.fromisoformat(datetime_str)
+        
+        # Ensure it has timezone info
+        if parsed_dt.tzinfo is None:
+            raise ValueError(f"{field_name} must include timezone information")
+        
+        return datetime_str
+    except (ValueError, TypeError) as e:
+        raise ValueError(f"{field_name} must be in ISO format with timezone (e.g., '2024-01-15T09:00:00+08:00'). Error: {str(e)}")
+
+def validate_required_string(value: str, field_name: str) -> str:
+    """Validate required string field."""
+    if not value or not value.strip():
+        raise ValueError(f"{field_name} is required and cannot be empty")
+    return value.strip()
 
 # Tool instances for use in agent (removed ListCalendarsTool as it's no longer needed)
 calendar_tools = [

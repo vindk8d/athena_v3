@@ -128,17 +128,17 @@ async def process_message(request: ProcessMessageRequest):
         
         logger.info(f"Processing message from colleague {contact_id} for user {user_id}: {colleague_message}")
         
+        # Get the agent to access LLM instance
+        agent = get_agent()
+        
         # Set up calendar service if access token provided
         if request.oauth_access_token:
-            set_calendar_service(request.oauth_access_token, request.oauth_refresh_token, user_id)
-            logger.info(f"Calendar service initialized for user {user_id}")
+            set_calendar_service(request.oauth_access_token, request.oauth_refresh_token, user_id, agent.llm)
+            logger.info(f"Calendar service initialized for user {user_id} with LLM instance")
         
         # Set the current user ID for tool context
         set_current_user_id(user_id)
         logger.info(f"User context set for tools: {user_id}")
-        
-        # Get the agent
-        agent = get_agent()
         
         # Process the message with the executive assistant agent
         result = await agent.process_message(
@@ -344,8 +344,11 @@ async def sync_calendars(request: Request):
             access_token = oauth_data['access_token']
             refresh_token = oauth_data.get('refresh_token')
             
-            # Initialize calendar service with OAuth tokens
-            set_calendar_service(access_token, refresh_token, user_id)
+            # Get agent for LLM instance
+            agent = get_agent()
+            
+            # Initialize calendar service with OAuth tokens and LLM instance
+            set_calendar_service(access_token, refresh_token, user_id, agent.llm)
             calendar_service = get_calendar_service()
             
             # Set user context for tools

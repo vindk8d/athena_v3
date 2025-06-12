@@ -12,9 +12,22 @@ import pytz  # Import for timezone operations
 import os  # Import for environment variables
 from google.auth.transport.requests import Request  # Import for refreshing access tokens
 from supabase import create_client, Client  # Import for database operations
+from langchain.schema import HumanMessage  # Import for LLM interaction
 
 # Set up logging
 logger = logging.getLogger(__name__)  # Create a logger instance for this module
+
+# Global LLM instance for availability mode detection (will be set by agent)
+_llm_instance = None
+
+def set_llm_instance(llm):
+    """Set the global LLM instance for intelligent availability mode detection."""
+    global _llm_instance
+    _llm_instance = llm
+
+def get_llm_instance():
+    """Get the global LLM instance."""
+    return _llm_instance
 
 # Initialize Supabase client for database operations
 def get_supabase_client():
@@ -48,23 +61,300 @@ def get_included_calendars(user_id: str) -> List[str]:
         logger.error(f"Error fetching included calendars: {e}")
         return []
 
+def parse_relative_time_reference(time_ref: str, user_timezone: str = "UTC", base_datetime: datetime = None) -> Tuple[datetime, datetime]:
+    """Parse relative time references like 'tomorrow', 'next week', etc. into datetime ranges."""
+    try:
+        if base_datetime is None:
+            base_datetime = datetime.now(pytz.timezone(user_timezone))
+        
+        # Ensure base_datetime has timezone info
+        if base_datetime.tzinfo is None:
+            base_datetime = pytz.timezone(user_timezone).localize(base_datetime)
+        
+        time_ref_lower = time_ref.lower().strip()
+        
+        if time_ref_lower in ['today']:
+            start = base_datetime.replace(hour=8, minute=0, second=0, microsecond=0)  # 8 AM
+            end = base_datetime.replace(hour=18, minute=0, second=0, microsecond=0)   # 6 PM
+            
+        elif time_ref_lower in ['tomorrow']:
+            tomorrow = base_datetime + timedelta(days=1)
+            start = tomorrow.replace(hour=8, minute=0, second=0, microsecond=0)
+            end = tomorrow.replace(hour=18, minute=0, second=0, microsecond=0)
+            
+        elif time_ref_lower in ['next week', 'next_week']:
+            # Find next Monday
+            days_ahead = 7 - base_datetime.weekday()  # Monday is 0
+            if days_ahead <= 0:  # Already next week
+                days_ahead += 7
+            next_monday = base_datetime + timedelta(days=days_ahead)
+            start = next_monday.replace(hour=8, minute=0, second=0, microsecond=0)
+            end = (next_monday + timedelta(days=4)).replace(hour=18, minute=0, second=0, microsecond=0)  # Friday 6 PM
+            
+        elif time_ref_lower in ['this week', 'this_week']:
+            # Start from next business day if it's weekend, otherwise today
+            if base_datetime.weekday() >= 5:  # Weekend
+                days_ahead = 7 - base_datetime.weekday()
+                start_day = base_datetime + timedelta(days=days_ahead)
+            else:
+                start_day = base_datetime
+            
+            start = start_day.replace(hour=8, minute=0, second=0, microsecond=0)
+            # End of this work week (Friday)
+            days_to_friday = 4 - start_day.weekday()
+            if days_to_friday < 0:
+                days_to_friday += 7
+            end_day = start_day + timedelta(days=days_to_friday)
+            end = end_day.replace(hour=18, minute=0, second=0, microsecond=0)
+            
+        elif time_ref_lower in ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']:
+            weekdays = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']
+            target_weekday = weekdays.index(time_ref_lower)
+            days_ahead = target_weekday - base_datetime.weekday()
+            if days_ahead <= 0:  # Target day already happened this week
+                days_ahead += 7
+            target_day = base_datetime + timedelta(days=days_ahead)
+            start = target_day.replace(hour=8, minute=0, second=0, microsecond=0)
+            end = target_day.replace(hour=18, minute=0, second=0, microsecond=0)
+            
+        else:
+            # Default to today if we can't parse the reference
+            logger.warning(f"Could not parse time reference '{time_ref}', defaulting to today")
+            start = base_datetime.replace(hour=8, minute=0, second=0, microsecond=0)
+            end = base_datetime.replace(hour=18, minute=0, second=0, microsecond=0)
+        
+        logger.info(f"Parsed '{time_ref}' to range: {start.isoformat()} - {end.isoformat()}")
+        return start, end
+        
+    except Exception as e:
+        logger.error(f"Error parsing time reference '{time_ref}': {e}")
+        # Fallback to today
+        fallback_start = base_datetime.replace(hour=8, minute=0, second=0, microsecond=0)
+        fallback_end = base_datetime.replace(hour=18, minute=0, second=0, microsecond=0)
+        return fallback_start, fallback_end
+
+async def determine_availability_mode(query: str, llm_instance=None) -> Dict[str, Any]:
+    """Use LLM to determine if this is a timespan inquiry or specific slot inquiry."""
+    try:
+        if llm_instance is None:
+            llm_instance = get_llm_instance()
+        
+        if llm_instance is None:
+            logger.warning("No LLM instance available, using fallback mode detection")
+            return _determine_availability_mode_fallback(query)
+        
+        mode_prompt = f"""Analyze this availability inquiry and determine the mode. Return ONLY valid JSON:
+
+Query: "{query}"
+
+Determine the inquiry type:
+- "timespan_inquiry": User wants to see available slots within a time period (e.g., "tomorrow", "next week", "what's free today")
+- "specific_slot_inquiry": User wants to check if a specific time slot is available (e.g., "2 PM tomorrow", "Monday at 10 AM")
+
+Also extract:
+- temporal_reference: The time reference mentioned (e.g., "tomorrow", "next week", "monday", "2 PM tomorrow")
+- has_specific_time: boolean - does the query mention a specific time?
+- suggested_duration: meeting duration in minutes if mentioned or implied (default: 30)
+
+Response format:
+{{"mode": "timespan_inquiry", "temporal_reference": "tomorrow", "has_specific_time": false, "suggested_duration": 30, "confidence": 0.9}}"""
+
+        response = await llm_instance.ainvoke([HumanMessage(content=mode_prompt)])
+        
+        # Parse LLM response
+        response_text = response.content.strip()
+        if not response_text.startswith('{'):
+            start = response_text.find('{')
+            end = response_text.rfind('}') + 1
+            if start >= 0 and end > start:
+                response_text = response_text[start:end]
+        
+        mode_analysis = json.loads(response_text)
+        
+        # Validate the mode
+        valid_modes = ["timespan_inquiry", "specific_slot_inquiry"]
+        if mode_analysis.get("mode") not in valid_modes:
+            logger.warning(f"Invalid mode from LLM: {mode_analysis.get('mode')}, using fallback")
+            return _determine_availability_mode_fallback(query)
+        
+        logger.info(f"🧠 LLM availability mode analysis: {mode_analysis}")
+        return mode_analysis
+        
+    except Exception as e:
+        logger.error(f"❌ LLM availability mode detection failed: {e}")
+        return _determine_availability_mode_fallback(query)
+
+def _determine_availability_mode_fallback(query: str) -> Dict[str, Any]:
+    """Fallback keyword-based mode detection."""
+    query_lower = query.lower()
+    
+    # Check for specific time indicators
+    specific_time_indicators = [
+        'at ', ' am', ' pm', ':', 'o\'clock', 'noon', 'midnight',
+        'morning', 'afternoon', 'evening', 'night'
+    ]
+    
+    has_specific_time = any(indicator in query_lower for indicator in specific_time_indicators)
+    
+    # Extract temporal reference
+    temporal_keywords = {
+        'today': 'today', 'tomorrow': 'tomorrow', 'yesterday': 'yesterday',
+        'next week': 'next_week', 'this week': 'this_week',
+        'monday': 'monday', 'tuesday': 'tuesday', 'wednesday': 'wednesday',
+        'thursday': 'thursday', 'friday': 'friday', 'saturday': 'saturday', 'sunday': 'sunday'
+    }
+    
+    temporal_reference = None
+    for keyword, value in temporal_keywords.items():
+        if keyword in query_lower:
+            temporal_reference = value
+            break
+    
+    # Determine mode based on analysis
+    if has_specific_time and temporal_reference:
+        mode = "specific_slot_inquiry"
+    elif temporal_reference:
+        mode = "timespan_inquiry"
+    else:
+        mode = "timespan_inquiry"  # Default to timespan for safety
+    
+    return {
+        "mode": mode,
+        "temporal_reference": temporal_reference or "today",
+        "has_specific_time": has_specific_time,
+        "suggested_duration": 30,
+        "confidence": 0.6
+    }
+
+def parse_specific_time_from_query(query: str, temporal_reference: str, user_timezone: str, base_datetime: datetime) -> Tuple[datetime, datetime]:
+    """Parse specific time from query when in specific_slot_inquiry mode."""
+    try:
+        # Start with the temporal reference range
+        start_datetime, end_datetime = parse_relative_time_reference(temporal_reference, user_timezone, base_datetime)
+        
+        query_lower = query.lower()
+        
+        # Try to extract specific time patterns
+        import re
+        
+        # Pattern for "2 PM", "14:00", "2:30 PM", etc.
+        time_patterns = [
+            r'(\d{1,2}):(\d{2})\s*(am|pm)?',  # 2:30 PM, 14:30
+            r'(\d{1,2})\s*(am|pm)',           # 2 PM, 2AM
+            r'(\d{1,2})\s*o\'?clock',         # 2 o'clock
+        ]
+        
+        specific_time = None
+        for pattern in time_patterns:
+            match = re.search(pattern, query_lower)
+            if match:
+                hour = int(match.group(1))
+                minute = int(match.group(2)) if len(match.groups()) > 1 and match.group(2) else 0
+                ampm = match.group(3) if len(match.groups()) > 2 else None
+                
+                # Convert to 24-hour format
+                if ampm:
+                    if ampm == 'pm' and hour != 12:
+                        hour += 12
+                    elif ampm == 'am' and hour == 12:
+                        hour = 0
+                
+                # Create the specific datetime
+                specific_time = start_datetime.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                break
+        
+        # Check for named times
+        named_times = {
+            'noon': 12, 'midnight': 0, 'morning': 9, 'afternoon': 14, 
+            'evening': 18, 'night': 20, 'lunchtime': 12
+        }
+        
+        if not specific_time:
+            for name, hour in named_times.items():
+                if name in query_lower:
+                    specific_time = start_datetime.replace(hour=hour, minute=0, second=0, microsecond=0)
+                    break
+        
+        if specific_time:
+            # Default 30-minute duration for specific time slots
+            end_time = specific_time + timedelta(minutes=30)
+            logger.info(f"Parsed specific time from '{query}': {specific_time.isoformat()} to {end_time.isoformat()}")
+            return specific_time, end_time
+        else:
+            # Fallback to the temporal reference range
+            logger.info(f"Could not parse specific time from '{query}', using temporal reference range")
+            return start_datetime, end_datetime
+            
+    except Exception as e:
+        logger.error(f"Error parsing specific time from query '{query}': {e}")
+        # Fallback to temporal reference
+        return parse_relative_time_reference(temporal_reference, user_timezone, base_datetime)
+
+def find_available_slots(busy_times: List[Dict], start_datetime: datetime, end_datetime: datetime, slot_duration_minutes: int = 30) -> List[Dict[str, str]]:
+    """Find available time slots within a time range, avoiding busy periods."""
+    try:
+        available_slots = []
+        
+        # Convert busy times to datetime objects for comparison
+        busy_periods = []
+        for busy in busy_times:
+            try:
+                busy_start = datetime.fromisoformat(busy['start'].replace('Z', '+00:00'))
+                busy_end = datetime.fromisoformat(busy['end'].replace('Z', '+00:00'))
+                busy_periods.append((busy_start, busy_end))
+            except Exception as e:
+                logger.warning(f"Could not parse busy time: {busy}, error: {e}")
+                continue
+        
+        # Sort busy periods by start time
+        busy_periods.sort(key=lambda x: x[0])
+        
+        # Generate time slots every 30 minutes within business hours
+        current_time = start_datetime
+        slot_duration = timedelta(minutes=slot_duration_minutes)
+        
+        while current_time + slot_duration <= end_datetime:
+            slot_end = current_time + slot_duration
+            
+            # Check if this slot conflicts with any busy period
+            is_free = True
+            for busy_start, busy_end in busy_periods:
+                # Check if there's any overlap
+                if not (slot_end <= busy_start or current_time >= busy_end):
+                    is_free = False
+                    break
+            
+            if is_free:
+                available_slots.append({
+                    'start': current_time.isoformat(),
+                    'end': slot_end.isoformat(),
+                    'duration_minutes': slot_duration_minutes
+                })
+            
+            # Move to next slot (30-minute intervals)
+            current_time += timedelta(minutes=30)
+        
+        return available_slots
+        
+    except Exception as e:
+        logger.error(f"Error finding available slots: {e}")
+        return []
+
 # Define base input model for calendar tools
 class CalendarToolsInput(BaseModel):
     """Base input model for calendar tools."""
     pass  # This is an empty base class for other input models to inherit from
 
-# Define input model for checking availability
+# Enhanced input model for checking availability with mode support
 class CheckAvailabilityInput(BaseModel):
-    """Input model for checking calendar availability."""
-    start_datetime: str = Field(description="Start datetime in ISO format with timezone (e.g., '2024-01-15T09:00:00+08:00')")
-    end_datetime: str = Field(description="End datetime in ISO format with timezone (e.g., '2024-01-15T10:00:00+08:00')")
-    duration_minutes: Optional[int] = Field(default=30, description="Meeting duration in minutes for context")
+    """Input model for checking calendar availability with enhanced mode support."""
+    query: str = Field(description="Natural language availability query (e.g., 'what slots are available tomorrow?', 'is 2 PM free on Monday?')")
+    duration_minutes: Optional[int] = Field(default=30, description="Preferred meeting duration in minutes for slot finding")
     
     class Config:
         json_schema_extra = {
             "example": {
-                "start_datetime": "2024-01-15T09:00:00+08:00",
-                "end_datetime": "2024-01-15T10:00:00+08:00",
+                "query": "what slots are available tomorrow?",
                 "duration_minutes": 30
             }
         }
@@ -316,10 +606,15 @@ class CalendarService:
 _calendar_service: Optional[CalendarService] = None
 _current_user_id: Optional[str] = None
 
-def set_calendar_service(access_token: str, refresh_token: str = None, user_id: str = None):
-    """Set the global calendar service instance."""
+def set_calendar_service(access_token: str, refresh_token: str = None, user_id: str = None, llm_instance=None):
+    """Set the global calendar service instance and LLM instance for tools."""
     global _calendar_service
     _calendar_service = CalendarService(access_token, refresh_token)
+    
+    # Set LLM instance for availability mode detection if provided
+    if llm_instance:
+        set_llm_instance(llm_instance)
+        logger.info("LLM instance set for intelligent availability mode detection")
     
     # Get the primary calendar's timezone and update user_details
     try:
@@ -513,65 +808,121 @@ def get_calendar_timezone(user_id: str, calendar_id: str) -> str:
         return "UTC"
 
 class CheckAvailabilityTool(BaseTool):
-    """Tool to check availability across user's configured calendars."""
+    """Tool to intelligently check availability across user's configured calendars with two modes: timespan inquiry and specific slot checking."""
     
     name = "check_availability"
-    description = """Check if a time slot is free across the user's configured calendars. 
-    REQUIRED PARAMETERS: start_datetime and end_datetime in ISO format with timezone.
-    NEVER call this tool without both parameters properly formatted."""
+    description = """Intelligently check availability across the user's configured calendars. 
+    This tool automatically detects if you're asking for:
+    1. Available time slots within a period (e.g., "what slots are free tomorrow?", "show me availability next week")
+    2. Whether a specific time is available (e.g., "is 2 PM tomorrow free?", "check Monday at 10 AM")
+    
+    REQUIRED PARAMETER: query - Natural language availability question
+    OPTIONAL PARAMETER: duration_minutes - Meeting duration for slot suggestions (default: 30)
+    
+    Examples:
+    - "What slots are available tomorrow?" 
+    - "Is he free next week?"
+    - "Check if 2 PM on Monday is available"
+    - "Show me free time this afternoon"
+    """
     args_schema = CheckAvailabilityInput
     
-    def _run(self, start_datetime: str, end_datetime: str = None, duration_minutes: int = 30) -> str:
-        """Execute the tool with enhanced validation."""
+    async def _arun(self, query: str, duration_minutes: int = 30) -> str:
+        """Execute the tool with enhanced async validation and LLM mode detection."""
         try:
             # Validate required inputs
-            start_datetime = validate_datetime_input(start_datetime, "start_datetime")
+            query = validate_required_string(query, "query")
             
-            # Calculate end_datetime if not provided
-            if end_datetime is None:
-                end_datetime = calculate_end_datetime(start_datetime, duration_minutes)
-            else:
-                end_datetime = validate_datetime_input(end_datetime, "end_datetime")
-            
-            logger.info(f"CheckAvailabilityTool called with start_datetime={start_datetime}, end_datetime={end_datetime}")
+            logger.info(f"CheckAvailabilityTool called with query='{query}', duration_minutes={duration_minutes}")
             
             user_id = get_current_user_id()
             user_timezone = get_user_timezone(user_id)
-            
-            # Get current datetime in user's timezone
-            current_datetime = datetime.now(pytz.timezone(user_timezone))
-            logger.info(f"Current datetime ({user_timezone}): {current_datetime.isoformat()}")
-            
-            # Parse the start datetime to check if it's in the past
-            start_dt = datetime.fromisoformat(start_datetime)
-            logger.info(f"Requested start datetime: {start_dt.isoformat()}")
-            
-            if start_dt < current_datetime:
-                logger.warning(f"Attempted to check availability for past time: {start_datetime}")
-                return f"❌ Cannot check availability for past time: {start_datetime}"
-            
             calendar_ids = get_included_calendars(user_id)
             
             if not calendar_ids:
                 return "No calendars configured for availability checking. Please configure calendars in the web interface."
             
-            service = get_calendar_service()
-            availability = service.check_availability(start_datetime, end_datetime, calendar_ids)
+            # Get current datetime in user's timezone
+            current_datetime = datetime.now(pytz.timezone(user_timezone))
+            logger.info(f"Current datetime ({user_timezone}): {current_datetime.isoformat()}")
             
-            if availability['is_free']:
-                return f"✅ Time slot {start_datetime} to {end_datetime} is FREE across all configured calendars"
-            else:
-                result = f"❌ Time slot {start_datetime} to {end_datetime} has CONFLICTS:\n"
-                for conflict in availability['conflicts']:
-                    result += f"- Busy from {conflict['start']} to {conflict['end']}\n"
-                return result
+            # Use LLM to determine availability mode
+            mode_analysis = await determine_availability_mode(query, get_llm_instance())
+            logger.info(f"Mode analysis result: {mode_analysis}")
+            
+            # Parse the temporal reference to get datetime range
+            temporal_ref = mode_analysis.get('temporal_reference', 'today')
+            start_datetime, end_datetime = parse_relative_time_reference(temporal_ref, user_timezone, current_datetime)
+            
+            # Check if the requested time is in the past
+            if start_datetime < current_datetime:
+                logger.warning(f"Attempted to check availability for past time: {start_datetime}")
+                return f"❌ Cannot check availability for past time. The requested time ({start_datetime.strftime('%Y-%m-%d %H:%M %Z')}) has already passed."
+            
+            service = get_calendar_service()
+            
+            if mode_analysis['mode'] == 'timespan_inquiry':
+                # Handle timespan inquiry - find available slots
+                logger.info(f"Processing timespan inquiry for {temporal_ref}")
+                
+                # Get busy times for the entire period
+                availability = service.check_availability(start_datetime.isoformat(), end_datetime.isoformat(), calendar_ids)
+                
+                # Find available slots within the timespan
+                all_busy_times = availability.get('conflicts', [])
+                available_slots = find_available_slots(all_busy_times, start_datetime, end_datetime, duration_minutes)
+                
+                if not available_slots:
+                    result = f"❌ No {duration_minutes}-minute slots available {temporal_ref} ({start_datetime.strftime('%Y-%m-%d %H:%M')} to {end_datetime.strftime('%H:%M %Z')})\n"
+                    if all_busy_times:
+                        result += "Busy periods:\n"
+                        for busy in all_busy_times:
+                            busy_start = datetime.fromisoformat(busy['start'].replace('Z', '+00:00'))
+                            busy_end = datetime.fromisoformat(busy['end'].replace('Z', '+00:00'))
+                            result += f"- {busy_start.strftime('%H:%M')} to {busy_end.strftime('%H:%M')}\n"
+                    return result
+                else:
+                    result = f"✅ Found {len(available_slots)} available {duration_minutes}-minute slots {temporal_ref}:\n"
+                    for i, slot in enumerate(available_slots[:8], 1):  # Limit to 8 slots for readability
+                        slot_start = datetime.fromisoformat(slot['start'])
+                        slot_end = datetime.fromisoformat(slot['end'])
+                        result += f"{i}. {slot_start.strftime('%H:%M')} - {slot_end.strftime('%H:%M')}\n"
+                    
+                    if len(available_slots) > 8:
+                        result += f"... and {len(available_slots) - 8} more slots available\n"
+                    
+                    return result
+                    
+            elif mode_analysis['mode'] == 'specific_slot_inquiry':
+                # Handle specific slot inquiry - check if specific time is free
+                logger.info(f"Processing specific slot inquiry for {temporal_ref}")
+                
+                # Parse the specific time from the query
+                slot_start, slot_end = parse_specific_time_from_query(query, temporal_ref, user_timezone, current_datetime)
+                
+                availability = service.check_availability(slot_start.isoformat(), slot_end.isoformat(), calendar_ids)
+                
+                if availability['is_free']:
+                    return f"✅ Time slot {slot_start.strftime('%Y-%m-%d %H:%M')} to {slot_end.strftime('%H:%M %Z')} is FREE across all configured calendars"
+                else:
+                    result = f"❌ Time slot {slot_start.strftime('%Y-%m-%d %H:%M')} to {slot_end.strftime('%H:%M %Z')} has CONFLICTS:\n"
+                    for conflict in availability['conflicts']:
+                        conflict_start = datetime.fromisoformat(conflict['start'].replace('Z', '+00:00'))
+                        conflict_end = datetime.fromisoformat(conflict['end'].replace('Z', '+00:00'))
+                        result += f"- Busy from {conflict_start.strftime('%H:%M')} to {conflict_end.strftime('%H:%M')}\n"
+                    return result
             
         except ValueError as e:
             logger.error(f"Validation error in CheckAvailabilityTool: {e}")
-            return f"❌ Validation Error: {str(e)}. Please provide valid start_datetime and end_datetime in ISO format with timezone."
+            return f"❌ Validation Error: {str(e)}. Please provide a valid availability query."
         except Exception as e:
             logger.error(f"Error checking availability: {e}")
             return f"Error checking availability: {str(e)}"
+    
+    def _run(self, query: str, duration_minutes: int = 30) -> str:
+        """Synchronous fallback - should not be used when async is available."""
+        # This is a fallback for sync execution, but the tool should be used async
+        return "❌ This tool requires async execution for LLM-based mode detection. Please use the async version."
 
 class CreateEventTool(BaseTool):
     """Tool to create a new calendar event on the user's primary calendar."""

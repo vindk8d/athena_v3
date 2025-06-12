@@ -292,6 +292,32 @@ def set_calendar_service(access_token: str, refresh_token: str = None):
     """Set the global calendar service instance."""
     global _calendar_service
     _calendar_service = CalendarService(access_token, refresh_token)
+    
+    # Get the primary calendar's timezone and update user_details
+    try:
+        calendars = _calendar_service.list_calendars()
+        primary_calendar = next((cal for cal in calendars if cal.get('primary', False)), None)
+        
+        if primary_calendar and primary_calendar.get('timezone'):
+            # Update user_details with the primary calendar's timezone
+            from supabase import create_client
+            import os
+            
+            supabase = create_client(
+                os.getenv('SUPABASE_URL'),
+                os.getenv('SUPABASE_SERVICE_KEY')
+            )
+            
+            # Get current user_id from the global context
+            user_id = get_current_user_id()
+            if user_id:
+                supabase.table('user_details').update({
+                    'default_timezone': primary_calendar['timezone'],
+                    'updated_at': datetime.utcnow().isoformat()
+                }).eq('user_id', user_id).execute()
+                logger.info(f"Updated user's default timezone to {primary_calendar['timezone']}")
+    except Exception as e:
+        logger.error(f"Error updating user's default timezone: {e}")
 
 def set_current_user_id(user_id: str):
     """Set the current user ID for tool context."""
@@ -573,20 +599,3 @@ calendar_tools = [
     CheckAvailabilityTool(),
     CreateEventTool()
 ]
-
-# Highlighted tools that agents can use:
-
-# 1. GetEventsTool:
-#    - Purpose: Retrieves events from the user's calendars for a specified date range.
-#    - Usage: Useful for checking what meetings are already scheduled.
-
-# 2. CheckAvailabilityTool:
-#    - Purpose: Checks if a time slot is free across the user's configured calendars.
-#    - Usage: Helps determine if a specific time period is available for scheduling.
-
-# 3. CreateEventTool:
-#    - Purpose: Creates a new calendar event on the user's primary calendar.
-#    - Usage: Used to schedule meetings after confirming availability.
-
-# These tools allow agents to interact with the user's calendar, check for conflicts,
-# and create new events as needed.

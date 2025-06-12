@@ -61,7 +61,7 @@ class CheckAvailabilityInput(BaseModel):
     duration_minutes: Optional[int] = Field(default=30, description="Meeting duration in minutes for context")
     
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "start_datetime": "2024-01-15T09:00:00+08:00",
                 "end_datetime": "2024-01-15T10:00:00+08:00",
@@ -76,7 +76,7 @@ class GetEventsInput(BaseModel):
     end_datetime: str = Field(description="End datetime in ISO format with timezone")
     
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "start_datetime": "2024-01-15T00:00:00+08:00",
                 "end_datetime": "2024-01-15T23:59:59+08:00"
@@ -94,7 +94,7 @@ class CreateEventInput(BaseModel):
     location: Optional[str] = Field(default="", description="Event location")
     
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "title": "Team Meeting",
                 "start_datetime": "2024-01-15T09:00:00+08:00",

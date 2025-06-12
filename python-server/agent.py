@@ -126,6 +126,12 @@ If you don't have the required information, STOP and ask the colleague for it. D
 - When reporting the current date/time, ALWAYS include the timezone being used
 - Example: "The current date is March 15, 2024, 2:30 PM Pacific Time (PT)"
 
+## Timezone Handling:
+- When asked about timezone, simply respond with the user's timezone from the context
+- DO NOT use any tools when responding to timezone questions
+- The timezone information is provided in the context message
+- Example response: "I'm using [User's Timezone] for all scheduling and time calculations."
+
 ## Communication Style:
 - **Professional but Approachable**: Maintain executive assistant professionalism
 - **Clear and Efficient**: Be direct and efficient in communications
@@ -418,6 +424,16 @@ class ExecutiveAssistantAgent:
         """Determine if tool execution should be blocked due to missing required information."""
         blocking_result = {"should_block": False, "reason": "", "missing_info": []}
         
+        # First check if this is a timezone-related question
+        if any(word in conversation_context.get("mentioned_keywords", []) for word in ["timezone", "time zone", "tz"]):
+            blocking_result.update({
+                "should_block": True,
+                "reason": "This is a timezone-related question. No tools should be used.",
+                "missing_info": []
+            })
+            return blocking_result
+        
+        # Then proceed with normal tool validation
         if tool_name == "check_availability":
             validation = ToolInputValidator.validate_check_availability(
                 tool_input.get("start_datetime", ""),
@@ -457,13 +473,59 @@ class ExecutiveAssistantAgent:
         
         return blocking_result
     
-    async def process_message(self, contact_id: str, message: str, user_id: str, user_details: Dict[str, Any] = None, access_token: str = None) -> Dict[str, Any]:
-        """
-        Process a colleague message and return an executive assistant response.
-        Single-user system: All contacts are colleagues of the one authenticated user.
+    async def _gather_missing_inputs(self, tool_name: str, missing_info: List[str], chat_history: List) -> Dict[str, Any]:
+        """Gather missing inputs through conversation."""
+        gathering_prompt = f"""You are gathering missing information for the {tool_name} tool.
+        Missing required parameters: {', '.join(missing_info)}
         
-        Enhanced with robust error prevention and validation.
-        """
+        Ask ONE question at a time to gather the missing information.
+        Be specific about what information you need and in what format.
+        Do not ask for all missing information at once.
+        
+        Current chat history:
+        {chat_history}
+        
+        Ask for the first missing parameter:"""
+        
+        response = await self.llm.ainvoke(gathering_prompt)
+        return {"question": response.content, "missing_info": missing_info}
+    
+    async def _handle_tool_execution_error(self, error: Exception, tool_name: str, tool_input: Dict[str, Any], 
+                                         chat_history: List, conversation_context: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle tool execution errors by gathering missing information."""
+        error_str = str(error)
+        missing_info = []
+        
+        # Extract missing parameters from error message
+        if "missing" in error_str.lower() and "required" in error_str.lower():
+            # Parse error message to extract missing parameters
+            missing_params = re.findall(r"missing.*?required.*?arguments?:?\s*([^:]+)", error_str, re.IGNORECASE)
+            if missing_params:
+                missing_info = [param.strip() for param in missing_params[0].split(',')]
+        
+        if missing_info:
+            # Gather missing inputs through conversation
+            gathering_result = await self._gather_missing_inputs(tool_name, missing_info, chat_history)
+            
+            # Add the gathering question to chat history
+            chat_history.append(HumanMessage(content=gathering_result["question"]))
+            
+            return {
+                "status": "gathering_inputs",
+                "question": gathering_result["question"],
+                "missing_info": missing_info,
+                "tool_name": tool_name,
+                "original_input": tool_input
+            }
+        
+        return {
+            "status": "error",
+            "error": str(error),
+            "tool_name": tool_name
+        }
+    
+    async def process_message(self, contact_id: str, message: str, user_id: str, user_details: Dict[str, Any] = None, access_token: str = None) -> Dict[str, Any]:
+        """Process a message with enhanced error handling and input gathering."""
         try:
             # Use the raw UUID contact_id for memory and DB
             memory = memory_manager.get_memory(contact_id)
@@ -597,12 +659,34 @@ Important Guidelines:
                     if blocking_check["should_block"]:
                         logger.warning(f"  ⚠️  TOOL CALL SHOULD HAVE BEEN BLOCKED: {blocking_check['reason']}")
                         logger.warning(f"  Missing information: {blocking_check['missing_info']}")
-            
-            # Log agent scratchpad information if available
-            if hasattr(result, 'agent_scratchpad') or 'agent_scratchpad' in result:
-                scratchpad = result.get('agent_scratchpad', 'Not available')
-                logger.info(f"=== AGENT SCRATCHPAD ===")
-                logger.info(f"Scratchpad content: {scratchpad}")
+                        
+                        # Handle missing inputs through conversation
+                        error_handling = await self._handle_tool_execution_error(
+                            Exception(blocking_check["reason"]),
+                            action.tool,
+                            action.tool_input,
+                            chat_history,
+                            conversation_context
+                        )
+                        
+                        if error_handling["status"] == "gathering_inputs":
+                            # Add the gathering question to memory
+                            await memory.add_message(AIMessage(content=error_handling["question"]))
+                            
+                            # Return the gathering question to continue the conversation
+                            return {
+                                "response": error_handling["question"],
+                                "intent": "gathering_inputs",
+                                "extracted_info": {
+                                    "missing_info": error_handling["missing_info"],
+                                    "tool_name": error_handling["tool_name"],
+                                    "original_input": error_handling["original_input"]
+                                },
+                                "tools_used": tools_used,
+                                "conversation_id": contact_id,
+                                "user_id": user_id,
+                                "contact_id": contact_id
+                            }
             
             # Add AI response to memory
             await memory.add_message(AIMessage(content=response))

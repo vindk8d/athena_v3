@@ -18,13 +18,12 @@ logger = logging.getLogger(__name__)  # Create a logger instance for this module
 
 # Initialize Supabase client for database operations
 def get_supabase_client():
-    """Get Supabase client for database operations."""
-    supabase_url = os.getenv("NEXT_PUBLIC_SUPABASE_URL")
-    supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")  # Use service role key instead of anon key
+    """Get a Supabase client instance."""
+    supabase_url = os.getenv("SUPABASE_URL")
+    supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")  # Use service role key for backend operations
     
     if not supabase_url or not supabase_key:
-        logger.error("Supabase credentials not found in environment variables")
-        return None
+        raise ValueError("Supabase URL and service role key are required")
     
     return create_client(supabase_url, supabase_key)
 
@@ -305,7 +304,7 @@ def set_calendar_service(access_token: str, refresh_token: str = None):
             
             supabase = create_client(
                 os.getenv('SUPABASE_URL'),
-                os.getenv('SUPABASE_SERVICE_KEY')
+                os.getenv('SUPABASE_SERVICE_ROLE_KEY')  # Use service role key for backend operations
             )
             
             # Get current user_id from the global context

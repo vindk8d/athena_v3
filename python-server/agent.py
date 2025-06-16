@@ -792,7 +792,14 @@ class AthenaLangGraphAgent:
             return {
                 "response": response,
                 "tools_used": tools_used,
-                "intent": intent
+                "intent": intent,
+                "user_id": user_id,
+                "contact_id": contact_id,
+                "extracted_info": {
+                    "current_datetime": current_datetime.isoformat(),
+                    "user_timezone": user_timezone,
+                    "langgraph_execution": True
+                }
             }
             
         except Exception as e:
@@ -800,7 +807,10 @@ class AthenaLangGraphAgent:
             return {
                 "response": "I apologize, but I encountered an error processing your request.",
                 "tools_used": [],
-                "intent": "error"
+                "intent": "error",
+                "user_id": user_id,
+                "contact_id": contact_id,
+                "extracted_info": None
             }
 
 # Agent factory function

@@ -696,80 +696,79 @@ class AthenaLangGraphAgent:
             return "your user"
     
     async def process_message(self, contact_id: str, message: str, user_id: str, user_details: Dict[str, Any] = None, access_token: str = None) -> Dict[str, Any]:
-        """Process a message using the LangGraph workflow."""
+        """Process an incoming message through the LangGraph workflow."""
         try:
-            # Get memory for this contact
-            memory = memory_manager.get_memory(contact_id)
-            chat_history = await memory.get_messages()
+            logger.info("🚀 Starting LangGraph execution")
             
-            # Prepare user context
-            user_timezone = user_details.get('default_timezone', 'UTC') if user_details else 'UTC'
+            # Set up calendar service if needed
+            if access_token:
+                set_calendar_service(access_token)
             
-            # Create initial state
+            # Get user timezone
+            user_timezone = user_details.get('timezone', 'UTC') if user_details else 'UTC'
+            
+            # Get current time in user's timezone
+            current_datetime = datetime.now(pytz.timezone(user_timezone))
+            
+            # Initialize state
             initial_state = AthenaState(
                 messages=[HumanMessage(content=message)],
                 user_id=user_id,
                 contact_id=contact_id,
                 user_details=user_details,
                 user_timezone=user_timezone,
-                current_datetime=datetime.now(pytz.timezone(user_timezone)).isoformat()
+                current_datetime=current_datetime.isoformat(),
+                intent=None,
+                intent_confidence=None,
+                is_calendar_related=None,
+                plan=None,
+                plan_complete=None,
+                required_info=None,
+                missing_info=None,
+                temporal_references=None,
+                normalized_times=None,
+                time_parsing_errors=None,
+                needs_clarification=None,
+                clarification_question=None,
+                clarification_context=None,
+                tools_to_execute=None,
+                tool_results=None,
+                execution_errors=None,
+                final_response=None,
+                response_metadata=None,
+                next_node=None,
+                conversation_complete=None
             )
             
-            # Add previous messages to state
-            if chat_history:
-                initial_state["messages"] = chat_history + [HumanMessage(content=message)]
+            # Create and compile the graph
+            graph = self.graph.compile()
+            app = graph.compile()
             
             # Execute the graph
-            logger.info("🚀 Starting LangGraph execution")
-            final_state = await self.graph.ainvoke(initial_state)
+            final_state = await app.ainvoke(initial_state)
             
-            # Add messages to memory
-            await memory.add_message(HumanMessage(content=message))
-            if final_state.get("final_response"):
-                await memory.add_message(AIMessage(content=final_state["final_response"]))
+            # Extract response
+            response = None
+            tools_used = []
+            intent = None
             
-            # Return result in expected format
+            if final_state:
+                response = final_state.get("final_response")
+                tools_used = final_state.get("tool_results", [])
+                intent = final_state.get("intent")
+            
             return {
-                "response": final_state.get("final_response", "I'm here to help you coordinate with your user."),
-                "intent": final_state.get("intent", "general_conversation"),
-                "extracted_info": {
-                    "intent_confidence": final_state.get("intent_confidence", 0.5),
-                    "is_calendar_related": final_state.get("is_calendar_related", False),
-                    "plan_complete": final_state.get("plan_complete", True),
-                    "temporal_references": final_state.get("temporal_references", []),
-                    "normalized_times": final_state.get("normalized_times", {}),
-                    "needs_clarification": final_state.get("needs_clarification", False),
-                    "current_datetime": final_state.get("current_datetime"),
-                    "user_timezone": user_timezone,
-                    "langgraph_execution": True
-                },
-                "tools_used": final_state.get("tool_results", []),
-                "conversation_id": contact_id,
-                "user_id": user_id,
-                "contact_id": contact_id
+                "response": response if response else "I apologize, but I encountered an error processing your request.",
+                "tools_used": tools_used,
+                "intent": intent
             }
             
         except Exception as e:
-            logger.error(f"Error in LangGraph execution: {e}")
-            
-            # Get user name for error response
-            user_name = self._get_user_name(user_details or {})
-            error_response = f"I apologize, but I encountered an error while processing your request. As {user_name}'s executive assistant, I'll make sure to resolve this. Please try again or rephrase your question."
-            
+            logger.error(f"Error in LangGraph execution: {str(e)}")
             return {
-                "response": error_response,
-                "intent": "error",
-                "extracted_info": {
-                    "error": str(e),
-                    "error_type": type(e).__name__,
-                    "user_id": user_id,
-                    "langgraph_execution": True,
-                    "execution_failed": True
-                },
+                "response": "I apologize, but I encountered an error processing your request.",
                 "tools_used": [],
-                "conversation_id": contact_id,
-                "user_id": user_id,
-                "contact_id": contact_id
+                "intent": "error"
             }
 
 # Agent factory function

@@ -2,7 +2,7 @@ from typing import Dict, Any, List, Optional, Literal, TypedDict, Annotated
 from langchain_openai import ChatOpenAI
 from langchain.schema import HumanMessage, AIMessage, SystemMessage
 from langchain.tools import Tool
-from langgraph.graph import StateGraph, START, END
+from langgraph.graph import StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 from langgraph.checkpoint.memory import MemorySaver
@@ -376,33 +376,25 @@ class AthenaLangGraphAgent:
     
     def _create_graph(self) -> StateGraph:
         """Create the LangGraph workflow."""
-        
-        # Create the graph
-        graph = StateGraph(AthenaState)
+        # Initialize the graph
+        workflow = StateGraph(AthenaState)
         
         # Add nodes
-        graph.add_node("input_interpreter", self._input_interpreter_node)
-        graph.add_node("planner", self._planner_node)
-        graph.add_node("time_normalizer", self._time_normalizer_node)
-        graph.add_node("clarification", self._clarification_node)
-        graph.add_node("execution", self._execution_node)
-        graph.add_node("response_generator", self._response_generator_node)
+        workflow.add_node("input_interpreter", self._input_interpreter_node)
+        workflow.add_node("planner", self._planner_node)
+        workflow.add_node("time_normalizer", self._time_normalizer_node)
+        workflow.add_node("clarification", self._clarification_node)
+        workflow.add_node("execution", self._execution_node)
+        workflow.add_node("response_generator", self._response_generator_node)
         
-        # Define the graph flow
-        graph.add_edge(START, "input_interpreter")
+        # Define edges
+        workflow.set_entry_point("input_interpreter")
         
-        # Conditional edge from input_interpreter
-        graph.add_conditional_edges(
-            "input_interpreter",
-            self._should_use_calendar_tools,
-            {
-                "calendar": "planner",
-                "direct_response": "response_generator"
-            }
-        )
+        # From input interpreter to planner
+        workflow.add_edge("input_interpreter", "planner")
         
-        # Conditional edges from planner
-        graph.add_conditional_edges(
+        # From planner, branch based on next steps needed
+        workflow.add_conditional_edges(
             "planner",
             self._planner_decision,
             {
@@ -413,15 +405,19 @@ class AthenaLangGraphAgent:
             }
         )
         
-        # Edges back to planner
-        graph.add_edge("time_normalizer", "planner")
-        graph.add_edge("clarification", END)  # Clarification ends the flow, waiting for user response
+        # From time normalizer to clarification or execution
+        workflow.add_edge("time_normalizer", "clarification")
         
-        # Execution to response
-        graph.add_edge("execution", "response_generator")
-        graph.add_edge("response_generator", END)
+        # From clarification to execution
+        workflow.add_edge("clarification", "execution")
         
-        return graph.compile()
+        # From execution to response generator
+        workflow.add_edge("execution", "response_generator")
+        
+        # End the graph at response generator
+        workflow.set_finish_point("response_generator")
+        
+        return workflow
     
     async def _input_interpreter_node(self, state: AthenaState) -> AthenaState:
         """Interpret the input and classify intent."""

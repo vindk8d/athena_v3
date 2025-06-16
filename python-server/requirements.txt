@@ -2,7 +2,7 @@ fastapi==0.104.1
 uvicorn[standard]==0.24.0
 langchain==0.1.5
 langchain-openai==0.0.5
-langchain-community==0.0.13
+langchain-community==0.0.17
 langgraph==0.0.26
 openai==1.6.1
 pydantic==2.5.2

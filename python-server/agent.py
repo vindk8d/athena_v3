@@ -416,7 +416,8 @@ class AthenaLangGraphAgent:
         # End the graph at response generator
         workflow.set_finish_point("response_generator")
         
-        return workflow
+        # Compile the graph
+        return workflow.compile()
     
     async def _input_interpreter_node(self, state: AthenaState) -> AthenaState:
         """Interpret the input and classify intent."""
@@ -702,10 +703,16 @@ class AthenaLangGraphAgent:
             
             # Set up calendar service if needed
             if access_token:
-                set_calendar_service(access_token)
+                try:
+                    set_calendar_service(access_token)
+                except Exception as e:
+                    logger.error(f"Error setting up calendar service: {str(e)}")
+                    # Continue execution without calendar service
             
-            # Get user timezone
-            user_timezone = user_details.get('timezone', 'UTC') if user_details else 'UTC'
+            # Get user timezone with fallback
+            user_timezone = 'UTC'
+            if user_details and isinstance(user_details, dict):
+                user_timezone = user_details.get('timezone', user_details.get('default_timezone', 'UTC'))
             
             # Get current time in user's timezone
             current_datetime = datetime.now(pytz.timezone(user_timezone))
@@ -715,7 +722,7 @@ class AthenaLangGraphAgent:
                 messages=[HumanMessage(content=message)],
                 user_id=user_id,
                 contact_id=contact_id,
-                user_details=user_details,
+                user_details=user_details if isinstance(user_details, dict) else {},
                 user_timezone=user_timezone,
                 current_datetime=current_datetime.isoformat(),
                 intent=None,
@@ -741,24 +748,23 @@ class AthenaLangGraphAgent:
             )
             
             # Create and compile the graph
-            graph = self.graph.compile()
-            app = graph.compile()
+            workflow = self._create_graph()
             
             # Execute the graph
-            final_state = await app.ainvoke(initial_state)
+            final_state = await workflow.ainvoke(initial_state)
             
-            # Extract response
-            response = None
+            # Extract response with proper fallbacks
+            response = "I apologize, but I encountered an error processing your request."
             tools_used = []
-            intent = None
+            intent = "error"
             
-            if final_state:
-                response = final_state.get("final_response")
-                tools_used = final_state.get("tool_results", [])
-                intent = final_state.get("intent")
+            if isinstance(final_state, dict):
+                response = final_state.get("final_response", response)
+                tools_used = final_state.get("tool_results", tools_used)
+                intent = final_state.get("intent", intent)
             
             return {
-                "response": response if response else "I apologize, but I encountered an error processing your request.",
+                "response": response,
                 "tools_used": tools_used,
                 "intent": intent
             }

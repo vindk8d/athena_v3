@@ -450,20 +450,12 @@ class CreateEventInput(BaseModel):
 class CalendarService:
     """Google Calendar API service wrapper."""
     
-    def __init__(self, access_token: str, refresh_token: str = None):
+    def __init__(self, credentials: Credentials):
         """Initialize calendar service with OAuth tokens."""
         try:
             # Create credentials object using the provided tokens
-            self.credentials = Credentials(
-                token=access_token,
-                refresh_token=refresh_token,
-                token_uri="https://oauth2.googleapis.com/token",
-                client_id=os.getenv('GOOGLE_CLIENT_ID'),  # Add client credentials for refresh
-                client_secret=os.getenv('GOOGLE_CLIENT_SECRET'),
-            )
-            
-            # Build the calendar service using the credentials
-            self.service = build('calendar', 'v3', credentials=self.credentials)
+            self.credentials = credentials
+            self.service = build('calendar', 'v3', credentials=credentials)
             logger.info("Calendar service initialized successfully")  # Log successful initialization
             
         except Exception as e:
@@ -473,15 +465,20 @@ class CalendarService:
     def refresh_token_if_needed(self):
         """Refresh the access token if it's expired or about to expire."""
         try:
-            if self.credentials.expired and self.credentials.refresh_token:
-                logger.info("Access token expired, refreshing...")
-                self.credentials.refresh(Request())
-                logger.info("Access token refreshed successfully")
-                return {
-                    'access_token': self.credentials.token,
-                    'refresh_token': self.credentials.refresh_token,
-                    'expires_at': self.credentials.expiry.isoformat() if self.credentials.expiry else None
-                }
+            if not self.credentials.valid:
+                if self.credentials.refresh_token and self.credentials.has_expired():
+                    try:
+                        self.credentials.refresh(Request())
+                        self.service = build('calendar', 'v3', credentials=self.credentials)
+                        logger.info("Access token refreshed successfully")
+                        return {
+                            'access_token': self.credentials.token,
+                            'refresh_token': self.credentials.refresh_token,
+                            'expires_at': self.credentials.expiry.isoformat() if self.credentials.expiry else None
+                        }
+                    except Exception as e:
+                        logger.error(f"Error refreshing token: {e}")
+                        raise
             return None
         except Exception as e:
             logger.error(f"Error refreshing token: {e}")
@@ -658,42 +655,44 @@ _calendar_service: Optional[CalendarService] = None
 _current_user_id: Optional[str] = None
 
 def set_calendar_service(access_token: str, refresh_token: str = None, user_id: str = None, llm_instance=None):
-    """Set the global calendar service instance and LLM instance for tools."""
-    global _calendar_service
-    _calendar_service = CalendarService(access_token, refresh_token)
-    
-    # Set LLM instance for availability mode detection if provided
-    if llm_instance:
-        set_llm_instance(llm_instance)
-        logger.info("LLM instance set for intelligent availability mode detection")
-    
-    # Get the primary calendar's timezone and update user_details
+    """Set up the calendar service with the provided credentials."""
     try:
-        calendars = _calendar_service.list_calendars()
-        primary_calendar = next((cal for cal in calendars if cal.get('primary', False)), None)
+        # Get OAuth2 credentials from environment variables
+        client_id = os.getenv('GOOGLE_CLIENT_ID')
+        client_secret = os.getenv('GOOGLE_CLIENT_SECRET')
+        token_uri = 'https://oauth2.googleapis.com/token'
         
-        if primary_calendar and primary_calendar.get('timezone'):
-            # Update user_details with the primary calendar's timezone
-            from supabase import create_client
-            import os
-            
-            supabase = create_client(
-                os.getenv('SUPABASE_URL'),
-                os.getenv('SUPABASE_SERVICE_ROLE_KEY')  # Use service role key for backend operations
-            )
-            
-            # Use provided user_id or get from global context
-            current_user_id = user_id or get_current_user_id()
-            if current_user_id:
-                supabase.table('user_details').update({
-                    'default_timezone': primary_calendar['timezone'],
-                    'updated_at': datetime.utcnow().isoformat()
-                }).eq('user_id', current_user_id).execute()
-                logger.info(f"Updated user's default timezone to {primary_calendar['timezone']}")
-            else:
-                logger.warning("Could not update timezone: No user ID available")
+        if not client_id or not client_secret:
+            logger.error("Google OAuth2 credentials not found in environment variables")
+            raise ValueError("Google OAuth2 credentials not configured")
+        
+        # Create credentials object with all required fields
+        creds = Credentials(
+            token=access_token,
+            refresh_token=refresh_token,
+            token_uri=token_uri,
+            client_id=client_id,
+            client_secret=client_secret,
+            scopes=['https://www.googleapis.com/auth/calendar']
+        )
+        
+        # Initialize calendar service
+        global _calendar_service
+        _calendar_service = CalendarService(creds)
+        
+        # Set LLM instance if provided
+        if llm_instance:
+            set_llm_instance(llm_instance)
+        
+        # Set user ID if provided
+        if user_id:
+            set_current_user_id(user_id)
+        
+        logger.info("Calendar service initialized successfully")
+        
     except Exception as e:
-        logger.error(f"Error updating user's default timezone: {e}")
+        logger.error(f"Error setting up calendar service: {str(e)}")
+        raise
 
 def set_current_user_id(user_id: str):
     """Set the current user ID for tool context."""

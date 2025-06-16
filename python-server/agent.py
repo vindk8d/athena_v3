@@ -389,8 +389,15 @@ class AthenaLangGraphAgent:
         # Define edges
         workflow.set_entry_point("input_interpreter")
         
-        # From input interpreter to planner
-        workflow.add_edge("input_interpreter", "planner")
+        # From input interpreter, branch based on intent
+        workflow.add_conditional_edges(
+            "input_interpreter",
+            self._should_use_calendar_tools,
+            {
+                "calendar": "planner",
+                "direct_response": "response_generator"
+            }
+        )
         
         # From planner, branch based on next steps needed
         workflow.add_conditional_edges(
@@ -404,7 +411,7 @@ class AthenaLangGraphAgent:
             }
         )
         
-        # From time normalizer to clarification or execution
+        # From time normalizer to clarification
         workflow.add_edge("time_normalizer", "clarification")
         
         # From clarification to execution
@@ -416,7 +423,6 @@ class AthenaLangGraphAgent:
         # End the graph at response generator
         workflow.set_finish_point("response_generator")
         
-        # Compile the graph
         return workflow.compile()
     
     async def _input_interpreter_node(self, state: AthenaState) -> AthenaState:
@@ -588,39 +594,59 @@ class AthenaLangGraphAgent:
         return state
     
     async def _response_generator_node(self, state: AthenaState) -> AthenaState:
-        """Generate the final response."""
-        logger.info("💬 Response Generator Node")
-        
-        # Check if we already have a response (from clarification)
-        if state.get("final_response"):
+        """Generate the final response based on the state."""
+        try:
+            # Get intent and user details
+            intent = state.get("intent", "")
+            user_details = state.get("user_details", {})
+            user_name = self._get_user_name(user_details)
+            
+            # Handle direct response intents
+            if intent in ["greeting", "general_conversation"]:
+                greeting_responses = {
+                    "greeting": f"Hello! I'm {user_name}'s executive assistant. How can I help you coordinate with {user_name}?",
+                    "general_conversation": f"I'm {user_name}'s executive assistant. I can help you schedule meetings and coordinate with {user_name}. What would you like to do?"
+                }
+                state["final_response"] = greeting_responses.get(intent, greeting_responses["general_conversation"])
+                return state
+            
+            # Handle calendar-related responses
+            if state.get("is_calendar_related", False):
+                if state.get("needs_clarification"):
+                    state["final_response"] = state.get("clarification_question", "Could you please provide more details about your request?")
+                elif state.get("execution_errors"):
+                    error_msg = state.get("execution_errors")[0]
+                    state["final_response"] = f"I encountered an error while processing your request: {error_msg}"
+                else:
+                    state["final_response"] = self._generate_response_from_tools(state)
+            
+            # Fallback response
+            if not state.get("final_response"):
+                state["final_response"] = f"I'm {user_name}'s executive assistant. I can help you schedule meetings and coordinate with {user_name}. What would you like to do?"
+            
             return state
-        
-        # Generate response based on state
-        if state.get("tool_results"):
-            # Generate response from tool results
-            response = self._generate_response_from_tools(state)
-        elif state["intent"] == "greeting":
-            user_name = self._get_user_name(state.get("user_details", {}))
-            response = f"Hello! I'm {user_name}'s executive assistant. How may I help you schedule a meeting with {user_name}?"
-        elif state["intent"] == "timezone_question":
-            response = f"I'm using {state['user_timezone']} for all scheduling and time calculations."
-        else:
-            # General response
-            user_name = self._get_user_name(state.get("user_details", {}))
-            response = f"I'm {user_name}'s executive assistant. I'd be happy to help you coordinate with {user_name}. What would you like to do?"
-        
-        state["final_response"] = response
-        state["conversation_complete"] = True
-        
-        logger.info("Final response generated")
-        
-        return state
+            
+        except Exception as e:
+            logger.error(f"Error in response generator: {str(e)}")
+            state["final_response"] = "I apologize, but I encountered an error processing your request."
+            return state
     
     def _should_use_calendar_tools(self, state: AthenaState) -> Literal["calendar", "direct_response"]:
-        """Decide if calendar tools are needed."""
-        if state.get("is_calendar_related", False):
-            return "calendar"
-        return "direct_response"
+        """Determine if we should use calendar tools based on intent."""
+        # Get intent information
+        intent = state.get("intent", "")
+        is_calendar_related = state.get("is_calendar_related", False)
+        
+        # List of intents that should bypass calendar tools
+        direct_response_intents = ["greeting", "general_conversation", "error"]
+        
+        # If intent is in direct_response_intents or not calendar related, go straight to response
+        if intent in direct_response_intents or not is_calendar_related:
+            logger.info(f"Direct response path chosen for intent: {intent}")
+            return "direct_response"
+        
+        logger.info(f"Calendar path chosen for intent: {intent}")
+        return "calendar"
     
     def _planner_decision(self, state: AthenaState) -> Literal["needs_time_normalization", "needs_clarification", "ready_for_execution", "direct_response"]:
         """Decide the next step from planner."""

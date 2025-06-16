@@ -1,0 +1,74 @@
+graph TD
+    subgraph State["AthenaState"]
+        subgraph Core
+            messages["messages"]
+        end
+        subgraph User Info
+            user_id["user_id"]
+            contact_id["contact_id"]
+            user_details["user_details"]
+            user_timezone["user_timezone"]
+            current_datetime["current_datetime"]
+        end
+        subgraph Intent
+            intent["intent"]
+            intent_confidence["intent_confidence"]
+            is_calendar_related["is_calendar_related"]
+        end
+        subgraph Planning
+            plan["plan"]
+            plan_complete["plan_complete"]
+            required_info["required_info"]
+            missing_info["missing_info"]
+        end
+        subgraph Time
+            temporal_references["temporal_references"]
+            normalized_times["normalized_times"]
+            time_parsing_errors["time_parsing_errors"]
+        end
+        subgraph Clarification
+            needs_clarification["needs_clarification"]
+            clarification_question["clarification_question"]
+            clarification_context["clarification_context"]
+        end
+        subgraph Tools
+            tools_to_execute["tools_to_execute"]
+            tool_results["tool_results"]
+            execution_errors["execution_errors"]
+        end
+        subgraph Response
+            final_response["final_response"]
+            response_metadata["response_metadata"]
+        end
+        subgraph Flow Control
+            next_node["next_node"]
+            conversation_complete["conversation_complete"]
+        end
+    end
+    input_interpreter_node["input_interpreter<br/>Interpret the input and classify intent."]
+    input_interpreter_node -->|"updates"| intent
+    input_interpreter_node -->|"updates"| intent_confidence
+    input_interpreter_node -->|"updates"| is_calendar_related
+    input_interpreter_node -->|"updates"| temporal_references
+    input_interpreter_node -->|"updates"| current_datetime
+    planner_node["planner<br/>Create execution plan and assess information completeness."]
+    planner_node -->|"updates"| plan
+    planner_node -->|"updates"| plan_complete
+    planner_node -->|"updates"| required_info
+    planner_node -->|"updates"| missing_info
+    planner_node -->|"updates"| next_node
+    time_normalizer_node["time_normalizer<br/>Normalize time references to tool-compatible formats."]
+    time_normalizer_node -->|"updates"| normalized_times
+    time_normalizer_node -->|"updates"| time_parsing_errors
+    clarification_node["clarification<br/>Generate clarification questions for missing information."]
+    clarification_node -->|"updates"| needs_clarification
+    clarification_node -->|"updates"| clarification_question
+    clarification_node -->|"updates"| clarification_context
+    clarification_node -->|"updates"| final_response
+    execution_node["execution<br/>Execute the planned tools."]
+    execution_node -->|"updates"| tool_results
+    execution_node -->|"updates"| execution_errors
+    response_generator_node["response_generator<br/>Generate the final response."]
+    response_generator_node -->|"updates"| final_response
+    response_generator_node -->|"updates"| response_metadata
+    response_generator_node -->|"updates"| conversation_complete

@@ -9,6 +9,7 @@ from datetime import datetime
 import pytz
 
 from config import Config
+# Use LangGraph agent as the primary and only agent
 from agent import get_agent, reset_agent
 from memory import memory_manager
 from tools import set_current_user_id, get_supabase_client, get_calendar_service, set_calendar_service
@@ -21,7 +22,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Initialize FastAPI app
-app = FastAPI(title="Athena Executive Assistant Server", version="2.0.0")
+app = FastAPI(title="Athena Executive Assistant Server - LangGraph", version="3.0.0")
 
 # Add CORS middleware
 app.add_middleware(
@@ -71,36 +72,49 @@ class ProcessMessageResponse(BaseModel):
 
 @app.on_event("startup")
 async def startup_event():
-    logger.info("Starting Athena Executive Assistant Server v2.0...")
+    logger.info("Starting Athena Executive Assistant Server v3.0 - LangGraph Edition...")
     logger.info(f"OpenAI API Key configured: {'Yes' if Config.OPENAI_API_KEY else 'No'}")
     logger.info(f"Model: {Config.LLM_MODEL}")
     logger.info(f"Temperature: {Config.LLM_TEMPERATURE}")
-    logger.info("Agent Mode: Single-User Executive Assistant (serves one user and their colleagues)")
+    logger.info("Agent Mode: LangGraph-based Executive Assistant with sophisticated reasoning")
     
-    # Initialize the executive assistant agent
+    # Initialize the LangGraph executive assistant agent
     try:
         agent = get_agent()
-        logger.info("Single-User Executive Assistant Agent initialized successfully")
+        logger.info("LangGraph Executive Assistant Agent initialized successfully")
     except Exception as e:
-        logger.error(f"Failed to initialize executive assistant agent: {e}")
+        logger.error(f"Failed to initialize LangGraph agent: {e}")
         raise
 
 @app.get("/")
 async def root():
     return {
-        "message": "Athena Executive Assistant Server v2.0 is running",
-        "version": "2.0.0",
-        "agent_type": "Single-User Executive Assistant",
-        "description": "AI assistant that acts on behalf of one authenticated user to coordinate with their colleagues",
+        "message": "Athena Executive Assistant Server v3.0 - LangGraph Edition",
+        "version": "3.0.0",
+        "agent_type": "langgraph_executive_assistant",
+        "description": "AI assistant with LangGraph-based reasoning for sophisticated multi-step interactions",
         "features": [
+            "LangGraph-based Reasoning",
+            "Input Interpretation Node",
+            "Conditional Planning",
+            "Time Normalization",
+            "Clarification Flow",
+            "Tool Execution",
             "Executive Assistant Persona",
             "Single-User Focus",
             "Colleague Coordination", 
             "Professional Meeting Scheduling",
             "User Calendar Management",
             "Google Calendar API Integration",
-            "Enhanced Memory Management per Contact",
-            "Simplified Single-User Architecture"
+            "Enhanced Memory Management per Contact"
+        ],
+        "graph_nodes": [
+            "input_interpreter",
+            "planner", 
+            "time_normalizer",
+            "clarification",
+            "execution",
+            "response_generator"
         ]
     }
 
@@ -109,15 +123,16 @@ async def health_check():
     return {
         "status": "healthy", 
         "service": "executive-assistant-server",
-        "version": "2.0.0",
-        "agent_type": "executive_assistant",
-        "agent_status": "initialized" if get_agent() else "not_initialized"
+        "version": "3.0.0",
+        "agent_type": "langgraph_executive_assistant",
+        "agent_status": "initialized" if get_agent() else "not_initialized",
+        "langgraph_enabled": True
     }
 
 @app.post("/process-message", response_model=ProcessMessageResponse)
 async def process_message(request: ProcessMessageRequest):
     """
-    Process a colleague's Telegram message using the executive assistant agent.
+    Process a colleague's Telegram message using the LangGraph executive assistant agent.
     """
     try:
         contact_id = request.contact_id
@@ -127,8 +142,9 @@ async def process_message(request: ProcessMessageRequest):
         colleague_message = telegram_msg.text
         
         logger.info(f"Processing message from colleague {contact_id} for user {user_id}: {colleague_message}")
+        logger.info("Using LangGraph agent with sophisticated reasoning")
         
-        # Get the agent to access LLM instance
+        # Get the LangGraph agent
         agent = get_agent()
         
         # Set up calendar service if access token provided
@@ -140,7 +156,7 @@ async def process_message(request: ProcessMessageRequest):
         set_current_user_id(user_id)
         logger.info(f"User context set for tools: {user_id}")
         
-        # Process the message with the executive assistant agent
+        # Process the message with the LangGraph executive assistant agent
         result = await agent.process_message(
             contact_id=contact_id,
             message=colleague_message,
@@ -149,9 +165,9 @@ async def process_message(request: ProcessMessageRequest):
             access_token=request.oauth_access_token
         )
         
-        logger.info(f"Executive assistant response generated successfully")
+        logger.info(f"LangGraph executive assistant response generated successfully")
         logger.info(f"Intent detected: {result.get('intent')}")
-        logger.info(f"Tools used: {[tool['tool'] for tool in result.get('tools_used', [])]}")
+        logger.info(f"Tools used: {[tool.get('tool', 'unknown') for tool in result.get('tools_used', [])]}")
         
         return ProcessMessageResponse(
             response=result["response"],
@@ -180,28 +196,28 @@ async def reset_conversation(contact_id: str):
 
 @app.post("/reset-agent")
 async def reset_agent_endpoint():
-    """Reset the global agent instance."""
+    """Reset the LangGraph agent instance."""
     try:
         reset_agent()
-        logger.info("Agent instance reset")
-        return {"status": "success", "message": "Agent instance reset successfully"}
+        logger.info("LangGraph agent instance reset")
+        return {"status": "success", "message": "LangGraph agent instance reset successfully"}
     except Exception as e:
         logger.error(f"Error resetting agent: {e}")
         raise HTTPException(status_code=500, detail=f"Error resetting agent: {str(e)}")
 
 @app.get("/agent-info")
 async def agent_info():
-    """Get information about the single-user executive assistant agent configuration."""
+    """Get information about the LangGraph executive assistant agent configuration."""
     try:
         agent = get_agent()
         return {
             "model": Config.LLM_MODEL,
             "temperature": Config.LLM_TEMPERATURE,
-            "agent_type": "single_user_executive_assistant",
+            "agent_type": "langgraph_executive_assistant",
             "persona": "Professional executive assistant acting on behalf of one authenticated user",
             "system_type": "single_user",
+            "reasoning_type": "langgraph_state_machine",
             "tools_available": [
-                "list_calendars",
                 "get_events", 
                 "check_availability",
                 "create_event"
@@ -211,11 +227,30 @@ async def agent_info():
                 "Colleague coordination",
                 "Professional meeting scheduling",
                 "Executive representation",
-                "Simplified architecture"
+                "Sophisticated multi-step reasoning"
+            ],
+            "graph_nodes": [
+                "input_interpreter",
+                "planner",
+                "time_normalizer", 
+                "clarification",
+                "execution",
+                "response_generator"
+            ],
+            "conditional_edges": [
+                "calendar_vs_direct_response",
+                "planner_decision_tree"
+            ],
+            "advanced_features": [
+                "Intent classification",
+                "Execution planning",
+                "Time normalization",
+                "Clarification flow",
+                "Multi-step reasoning"
             ],
             "memory_management": "per_contact_isolation",
             "multi_user_support": False,
-            "description": "Serves one user and coordinates with their colleagues"
+            "description": "Serves one user and coordinates with their colleagues using LangGraph reasoning"
         }
     except Exception as e:
         logger.error(f"Error getting agent info: {e}")
@@ -237,9 +272,6 @@ async def simple_process_message(request: ProcessMessageRequest):
         
         logger.info(f"Processing simple message from colleague {contact_id} for user {user_id}: {colleague_message}")
         
-        # Get memory for this contact (single-user system)
-        memory = memory_manager.get_memory(contact_id)
-        
         # Create user name for response
         user_name = "your user"
         user_timezone = "UTC"
@@ -252,7 +284,7 @@ async def simple_process_message(request: ProcessMessageRequest):
                 user_name = first_name
             
             # Get user's timezone
-            user_timezone = user_details.get('timezone', 'UTC')
+            user_timezone = user_details.get('default_timezone', 'UTC')
         
         # Get current datetime in user's timezone
         user_tz = pytz.timezone(user_timezone)
@@ -277,7 +309,8 @@ async def simple_process_message(request: ProcessMessageRequest):
                 "simple_mode": True, 
                 "executive_assistant_mode": True,
                 "current_datetime": current_datetime.isoformat(),
-                "user_timezone": user_timezone
+                "user_timezone": user_timezone,
+                "langgraph_execution": False
             },
             tools_used=[]
         )
@@ -344,7 +377,7 @@ async def sync_calendars(request: Request):
             access_token = oauth_data['access_token']
             refresh_token = oauth_data.get('refresh_token')
             
-            # Get agent for LLM instance
+            # Get LangGraph agent for LLM instance
             agent = get_agent()
             
             # Initialize calendar service with OAuth tokens and LLM instance

@@ -1,5 +1,5 @@
 # Import necessary modules and types
-from typing import List, Dict, Any, Optional, Tuple  # Import types for type hinting
+from typing import List, Dict, Any, Optional, Tuple, Type  # Import types for type hinting
 from langchain.tools import BaseTool  # Import BaseTool for creating custom tools
 from pydantic import BaseModel, Field  # Import for creating data models and fields
 from datetime import datetime, timedelta, timezone  # Import for date and time operations
@@ -13,6 +13,7 @@ import os  # Import for environment variables
 from google.auth.transport.requests import Request  # Import for refreshing access tokens
 from supabase import create_client, Client  # Import for database operations
 from langchain.schema import HumanMessage  # Import for LLM interaction
+import re  # Import for regular expressions
 
 # Set up logging
 logger = logging.getLogger(__name__)  # Create a logger instance for this module
@@ -73,14 +74,59 @@ def parse_relative_time_reference(time_ref: str, user_timezone: str = "UTC", bas
         
         time_ref_lower = time_ref.lower().strip()
         
+        # Extract specific time if present (e.g., "3 PM", "14:00")
+        specific_time = None
+        time_patterns = [
+            r'(\d{1,2}):(\d{2})\s*(am|pm)?',  # 2:30 PM, 14:30
+            r'(\d{1,2})\s*(am|pm)',           # 2 PM, 2AM
+            r'(\d{1,2})\s*o\'?clock',         # 2 o'clock
+        ]
+        
+        for pattern in time_patterns:
+            match = re.search(pattern, time_ref_lower)
+            if match:
+                hour = int(match.group(1))
+                minute = int(match.group(2)) if len(match.groups()) > 1 and match.group(2) else 0
+                ampm = match.group(3) if len(match.groups()) > 2 else None
+                
+                # Convert to 24-hour format
+                if ampm:
+                    if ampm == 'pm' and hour != 12:
+                        hour += 12
+                    elif ampm == 'am' and hour == 12:
+                        hour = 0
+                
+                specific_time = (hour, minute)
+                break
+        
+        # Check for named times
+        named_times = {
+            'noon': 12, 'midnight': 0, 'morning': 9, 'afternoon': 14, 
+            'evening': 18, 'night': 20, 'lunchtime': 12
+        }
+        
+        if not specific_time:
+            for name, hour in named_times.items():
+                if name in time_ref_lower:
+                    specific_time = (hour, 0)
+                    break
+        
         if time_ref_lower in ['today']:
-            start = base_datetime.replace(hour=8, minute=0, second=0, microsecond=0)  # 8 AM
-            end = base_datetime.replace(hour=18, minute=0, second=0, microsecond=0)   # 6 PM
+            if specific_time:
+                start = base_datetime.replace(hour=specific_time[0], minute=specific_time[1], second=0, microsecond=0)
+                end = start + timedelta(minutes=30)  # Default 30-minute duration
+            else:
+                start = base_datetime.replace(hour=8, minute=0, second=0, microsecond=0)  # 8 AM
+                end = base_datetime.replace(hour=18, minute=0, second=0, microsecond=0)   # 6 PM
             
         elif time_ref_lower in ['tomorrow']:
             tomorrow = base_datetime + timedelta(days=1)
-            start = tomorrow.replace(hour=8, minute=0, second=0, microsecond=0)
-            end = tomorrow.replace(hour=18, minute=0, second=0, microsecond=0)
+            if specific_time:
+                start = tomorrow.replace(hour=specific_time[0], minute=specific_time[1], second=0, microsecond=0)
+                end = start + timedelta(minutes=30)  # Default 30-minute duration
+            else:
+                start = tomorrow.replace(hour=8, minute=0, second=0, microsecond=0)
+                end = tomorrow.replace(hour=18, minute=0, second=0, microsecond=0)
             
         elif time_ref_lower in ['next week', 'next_week']:
             # Find next Monday
@@ -114,14 +160,22 @@ def parse_relative_time_reference(time_ref: str, user_timezone: str = "UTC", bas
             if days_ahead <= 0:  # Target day already happened this week
                 days_ahead += 7
             target_day = base_datetime + timedelta(days=days_ahead)
-            start = target_day.replace(hour=8, minute=0, second=0, microsecond=0)
-            end = target_day.replace(hour=18, minute=0, second=0, microsecond=0)
+            if specific_time:
+                start = target_day.replace(hour=specific_time[0], minute=specific_time[1], second=0, microsecond=0)
+                end = start + timedelta(minutes=30)  # Default 30-minute duration
+            else:
+                start = target_day.replace(hour=8, minute=0, second=0, microsecond=0)
+                end = target_day.replace(hour=18, minute=0, second=0, microsecond=0)
             
         else:
             # Default to today if we can't parse the reference
             logger.warning(f"Could not parse time reference '{time_ref}', defaulting to today")
-            start = base_datetime.replace(hour=8, minute=0, second=0, microsecond=0)
-            end = base_datetime.replace(hour=18, minute=0, second=0, microsecond=0)
+            if specific_time:
+                start = base_datetime.replace(hour=specific_time[0], minute=specific_time[1], second=0, microsecond=0)
+                end = start + timedelta(minutes=30)  # Default 30-minute duration
+            else:
+                start = base_datetime.replace(hour=8, minute=0, second=0, microsecond=0)
+                end = base_datetime.replace(hour=18, minute=0, second=0, microsecond=0)
         
         logger.info(f"Parsed '{time_ref}' to range: {start.isoformat()} - {end.isoformat()}")
         return start, end
@@ -235,9 +289,6 @@ def parse_specific_time_from_query(query: str, temporal_reference: str, user_tim
         query_lower = query.lower()
         
         # Try to extract specific time patterns
-        import re
-        
-        # Pattern for "2 PM", "14:00", "2:30 PM", etc.
         time_patterns = [
             r'(\d{1,2}):(\d{2})\s*(am|pm)?',  # 2:30 PM, 14:30
             r'(\d{1,2})\s*(am|pm)',           # 2 PM, 2AM
@@ -666,9 +717,9 @@ def get_current_user_id() -> str:
 class ListCalendarsTool(BaseTool):
     """Tool to list all calendars for the authenticated user."""
     
-    name = "list_calendars"
-    description = "List all calendars for the user. Use this to see available calendars before checking events or availability. No arguments needed."
-    args_schema = CalendarToolsInput
+    name: str = "list_calendars"
+    description: str = "List all calendars for the user. Use this to see available calendars before checking events or availability. No arguments needed."
+    args_schema: Type[BaseModel] = CalendarToolsInput
     
     def _run(self, *args, **kwargs) -> str:
         """List all calendars for the authenticated user."""
@@ -698,11 +749,11 @@ class ListCalendarsTool(BaseTool):
 class GetEventsTool(BaseTool):
     """Tool to get events from user's calendars for a date range."""
     
-    name = "get_events"
-    description = """Get events from the user's calendars for a date range. 
+    name: str = "get_events"
+    description: str = """Get events from the user's calendars for a date range. 
     REQUIRED PARAMETERS: start_datetime and end_datetime in ISO format with timezone.
     NEVER call this tool without both parameters properly formatted."""
-    args_schema = GetEventsInput
+    args_schema: Type[BaseModel] = GetEventsInput
     
     def _run(self, start_datetime: str, end_datetime: str) -> str:
         """Execute the tool with enhanced validation."""
@@ -810,8 +861,8 @@ def get_calendar_timezone(user_id: str, calendar_id: str) -> str:
 class CheckAvailabilityTool(BaseTool):
     """Tool to intelligently check availability across user's configured calendars with two modes: timespan inquiry and specific slot checking."""
     
-    name = "check_availability"
-    description = """Intelligently check availability across the user's configured calendars. 
+    name: str = "check_availability"
+    description: str = """Intelligently check availability across the user's configured calendars. 
     This tool automatically detects if you're asking for:
     1. Available time slots within a period (e.g., "what slots are free tomorrow?", "show me availability next week")
     2. Whether a specific time is available (e.g., "is 2 PM tomorrow free?", "check Monday at 10 AM")
@@ -825,7 +876,7 @@ class CheckAvailabilityTool(BaseTool):
     - "Check if 2 PM on Monday is available"
     - "Show me free time this afternoon"
     """
-    args_schema = CheckAvailabilityInput
+    args_schema: Type[BaseModel] = CheckAvailabilityInput
     
     async def _arun(self, query: str, duration_minutes: int = 30) -> str:
         """Execute the tool with enhanced async validation and LLM mode detection."""
@@ -927,11 +978,11 @@ class CheckAvailabilityTool(BaseTool):
 class CreateEventTool(BaseTool):
     """Tool to create a new calendar event on the user's primary calendar."""
     
-    name = "create_event"
-    description = """Create a new calendar event on the user's primary calendar. 
+    name: str = "create_event"
+    description: str = """Create a new calendar event on the user's primary calendar. 
     REQUIRED PARAMETERS: title, start_datetime, and end_datetime.
     NEVER call this tool without all required parameters properly formatted."""
-    args_schema = CreateEventInput
+    args_schema: Type[BaseModel] = CreateEventInput
     
     def _run(self, title: str, start_datetime: str, end_datetime: str, 
             attendee_emails: List[str] = None, description: str = "", location: str = "") -> str:

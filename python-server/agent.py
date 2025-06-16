@@ -790,14 +790,18 @@ class AthenaLangGraphAgent:
             
             if isinstance(final_state, dict):
                 response = final_state.get("final_response", response)
-                tools_used = final_state.get("tool_results", tools_used)
+                tools_used = final_state.get("tool_results", tools_used) or []
                 intent = final_state.get("intent", intent)
             elif hasattr(final_state, "__dict__"):
                 # Handle case where final_state is an object with attributes
                 state_dict = final_state.__dict__
                 response = state_dict.get("final_response", response)
-                tools_used = state_dict.get("tool_results", tools_used)
+                tools_used = state_dict.get("tool_results", tools_used) or []
                 intent = state_dict.get("intent", intent)
+            
+            # Ensure tools_used is always a list
+            if tools_used is None:
+                tools_used = []
             
             # Debug logging
             logger.info(f"Extracted response: {response}")

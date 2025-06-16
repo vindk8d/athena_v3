@@ -779,6 +779,10 @@ class AthenaLangGraphAgent:
             # Execute the graph
             final_state = await workflow.ainvoke(initial_state)
             
+            # Debug logging
+            logger.info(f"Final state type: {type(final_state)}")
+            logger.info(f"Final state content: {final_state}")
+            
             # Extract response with proper fallbacks
             response = "I apologize, but I encountered an error processing your request."
             tools_used = []
@@ -788,6 +792,17 @@ class AthenaLangGraphAgent:
                 response = final_state.get("final_response", response)
                 tools_used = final_state.get("tool_results", tools_used)
                 intent = final_state.get("intent", intent)
+            elif hasattr(final_state, "__dict__"):
+                # Handle case where final_state is an object with attributes
+                state_dict = final_state.__dict__
+                response = state_dict.get("final_response", response)
+                tools_used = state_dict.get("tool_results", tools_used)
+                intent = state_dict.get("intent", intent)
+            
+            # Debug logging
+            logger.info(f"Extracted response: {response}")
+            logger.info(f"Extracted tools_used: {tools_used}")
+            logger.info(f"Extracted intent: {intent}")
             
             return {
                 "response": response,

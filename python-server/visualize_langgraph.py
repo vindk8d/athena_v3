@@ -7,19 +7,63 @@ Generates Mermaid diagrams by analyzing the actual graph implementation.
 import inspect
 import os
 import ast
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Literal, TypedDict, Annotated
 from pathlib import Path
 import logging
 from datetime import datetime
 import textwrap
 
-# Import the actual graph implementation
-from agent import AthenaState
-
 logger = logging.getLogger(__name__)
 
+# Mock AthenaState for visualization
+class AthenaState(TypedDict):
+    """State schema for Athena's reasoning graph."""
+    # Core message flow
+    messages: List[Any]
+    
+    # User and context information
+    user_id: str
+    contact_id: str
+    user_details: Optional[Dict[str, Any]]
+    user_timezone: str
+    current_datetime: str
+    
+    # Intent and understanding
+    intent: Optional[str]
+    intent_confidence: Optional[float]
+    is_calendar_related: Optional[bool]
+    
+    # Planning and execution
+    plan: Optional[List[Dict[str, Any]]]
+    plan_complete: Optional[bool]
+    required_info: Optional[List[str]]
+    missing_info: Optional[List[str]]
+    
+    # Time processing
+    temporal_references: Optional[List[str]]
+    normalized_times: Optional[Dict[str, str]]
+    time_parsing_errors: Optional[List[str]]
+    
+    # Clarification flow
+    needs_clarification: Optional[bool]
+    clarification_question: Optional[str]
+    clarification_context: Optional[Dict[str, Any]]
+    
+    # Tool execution
+    tools_to_execute: Optional[List[Dict[str, Any]]]
+    tool_results: Optional[List[Dict[str, Any]]]
+    execution_errors: Optional[List[str]]
+    
+    # Response generation
+    final_response: Optional[str]
+    response_metadata: Optional[Dict[str, Any]]
+    
+    # Graph flow control
+    next_node: Optional[str]
+    conversation_complete: Optional[bool]
+
 class MockAgent:
-    """Mock agent for visualization when no API key is available."""
+    """Mock agent for visualization."""
     
     def __init__(self):
         """Initialize with mock graph creation."""

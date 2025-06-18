@@ -9,10 +9,9 @@ from datetime import datetime
 import pytz
 
 from config import Config
-# Use LangGraph agent as the primary and only agent
-from agent import get_agent, reset_agent
+# Use the new main agent as the primary agent
+from agent_main import get_simple_agent as get_agent, reset_simple_agent as reset_agent, set_current_user_id, get_supabase_client, get_calendar_service, set_calendar_service
 from memory import memory_manager
-from tools import set_current_user_id, get_supabase_client, get_calendar_service, set_calendar_service
 
 # Load environment variables
 load_dotenv()
@@ -72,49 +71,50 @@ class ProcessMessageResponse(BaseModel):
 
 @app.on_event("startup")
 async def startup_event():
-    logger.info("Starting Athena Executive Assistant Server v3.0 - LangGraph Edition...")
+    logger.info("Starting Athena Executive Assistant Server v3.0 - Simplified LangGraph Edition...")
     logger.info(f"OpenAI API Key configured: {'Yes' if Config.OPENAI_API_KEY else 'No'}")
     logger.info(f"Model: {Config.LLM_MODEL}")
     logger.info(f"Temperature: {Config.LLM_TEMPERATURE}")
-    logger.info("Agent Mode: LangGraph-based Executive Assistant with sophisticated reasoning")
+    logger.info("Agent Mode: Simplified LangGraph Executive Assistant with integrated calendar tools")
     
-    # Initialize the LangGraph executive assistant agent
+    # Initialize the simplified LangGraph executive assistant agent
     try:
         agent = get_agent()
-        logger.info("LangGraph Executive Assistant Agent initialized successfully")
+        logger.info("Simplified LangGraph Executive Assistant Agent initialized successfully")
     except Exception as e:
-        logger.error(f"Failed to initialize LangGraph agent: {e}")
+        logger.error(f"Failed to initialize simplified LangGraph agent: {e}")
         raise
 
 @app.get("/")
 async def root():
     return {
-        "message": "Athena Executive Assistant Server v3.0 - LangGraph Edition",
+        "message": "Athena Executive Assistant Server v3.0 - Simplified LangGraph Edition",
         "version": "3.0.0",
-        "agent_type": "langgraph_executive_assistant",
-        "description": "AI assistant with LangGraph-based reasoning for sophisticated multi-step interactions",
+        "agent_type": "simplified_langgraph_executive_assistant",
+        "description": "AI assistant with simplified LangGraph-based reasoning and integrated Google Calendar tools",
         "features": [
-            "LangGraph-based Reasoning",
-            "Input Interpretation Node",
-            "Conditional Planning",
-            "Time Normalization",
-            "Clarification Flow",
-            "Tool Execution",
+            "Simplified LangGraph Reasoning",
+            "Intent Classification",
+            "Intelligent Tool Execution",
+            "Integrated Calendar Service",
             "Executive Assistant Persona",
             "Single-User Focus",
             "Colleague Coordination", 
             "Professional Meeting Scheduling",
             "User Calendar Management",
             "Google Calendar API Integration",
-            "Enhanced Memory Management per Contact"
+            "Direct Calendar Tool Access",
+            "Natural Language Time Processing"
         ],
         "graph_nodes": [
-            "input_interpreter",
-            "planner", 
-            "time_normalizer",
-            "clarification",
-            "execution",
-            "response_generator"
+            "intent_classifier",
+            "execution_decider", 
+            "meeting_request",
+            "calendar_inquiry",
+            "availability_inquiry",
+            "meeting_modification",
+            "time_question",
+            "general_conversation"
         ]
     }
 
@@ -124,15 +124,16 @@ async def health_check():
         "status": "healthy", 
         "service": "executive-assistant-server",
         "version": "3.0.0",
-        "agent_type": "langgraph_executive_assistant",
+        "agent_type": "simplified_langgraph_executive_assistant",
         "agent_status": "initialized" if get_agent() else "not_initialized",
-        "langgraph_enabled": True
+        "langgraph_enabled": True,
+        "integrated_calendar_tools": True
     }
 
 @app.post("/process-message", response_model=ProcessMessageResponse)
 async def process_message(request: ProcessMessageRequest):
     """
-    Process a colleague's Telegram message using the LangGraph executive assistant agent.
+    Process a colleague's Telegram message using the simplified LangGraph executive assistant agent.
     """
     try:
         contact_id = request.contact_id
@@ -142,9 +143,9 @@ async def process_message(request: ProcessMessageRequest):
         colleague_message = telegram_msg.text
         
         logger.info(f"Processing message from colleague {contact_id} for user {user_id}: {colleague_message}")
-        logger.info("Using LangGraph agent with sophisticated reasoning")
+        logger.info("Using simplified LangGraph agent with integrated calendar tools")
         
-        # Get the LangGraph agent
+        # Get the simplified LangGraph agent
         agent = get_agent()
         
         # Set up calendar service if access token provided
@@ -156,7 +157,7 @@ async def process_message(request: ProcessMessageRequest):
         set_current_user_id(user_id)
         logger.info(f"User context set for tools: {user_id}")
         
-        # Process the message with the LangGraph executive assistant agent
+        # Process the message with the simplified LangGraph executive assistant agent
         result = await agent.process_message(
             contact_id=contact_id,
             message=colleague_message,
@@ -165,7 +166,7 @@ async def process_message(request: ProcessMessageRequest):
             access_token=request.oauth_access_token
         )
         
-        logger.info(f"LangGraph executive assistant response generated successfully")
+        logger.info(f"Simplified LangGraph executive assistant response generated successfully")
         logger.info(f"Intent detected: {result.get('intent')}")
         logger.info(f"Tools used: {[tool.get('tool', 'unknown') for tool in result.get('tools_used', [])]}")
         
@@ -196,61 +197,66 @@ async def reset_conversation(contact_id: str):
 
 @app.post("/reset-agent")
 async def reset_agent_endpoint():
-    """Reset the LangGraph agent instance."""
+    """Reset the simplified LangGraph agent instance."""
     try:
         reset_agent()
-        logger.info("LangGraph agent instance reset")
-        return {"status": "success", "message": "LangGraph agent instance reset successfully"}
+        logger.info("Simplified LangGraph agent instance reset")
+        return {"status": "success", "message": "Simplified LangGraph agent instance reset successfully"}
     except Exception as e:
         logger.error(f"Error resetting agent: {e}")
         raise HTTPException(status_code=500, detail=f"Error resetting agent: {str(e)}")
 
 @app.get("/agent-info")
 async def agent_info():
-    """Get information about the LangGraph executive assistant agent configuration."""
+    """Get information about the simplified LangGraph executive assistant agent configuration."""
     try:
         agent = get_agent()
         return {
             "model": Config.LLM_MODEL,
             "temperature": Config.LLM_TEMPERATURE,
-            "agent_type": "langgraph_executive_assistant",
+            "agent_type": "simplified_langgraph_executive_assistant",
             "persona": "Professional executive assistant acting on behalf of one authenticated user",
             "system_type": "single_user",
-            "reasoning_type": "langgraph_state_machine",
+            "reasoning_type": "simplified_langgraph_workflow",
             "tools_available": [
-                "get_events", 
-                "check_availability",
-                "create_event"
+                "check_availability_tool",
+                "create_event_tool", 
+                "get_events_tool",
+                "get_current_time_tool",
+                "convert_relative_time_tool"
             ],
             "capabilities": [
                 "Single user calendar management",
                 "Colleague coordination",
                 "Professional meeting scheduling",
                 "Executive representation",
-                "Sophisticated multi-step reasoning"
+                "Intelligent intent classification",
+                "Direct calendar integration"
             ],
             "graph_nodes": [
-                "input_interpreter",
-                "planner",
-                "time_normalizer", 
-                "clarification",
-                "execution",
-                "response_generator"
+                "intent_classifier",
+                "execution_decider",
+                "meeting_request", 
+                "calendar_inquiry",
+                "availability_inquiry",
+                "meeting_modification",
+                "time_question",
+                "general_conversation"
             ],
             "conditional_edges": [
-                "calendar_vs_direct_response",
-                "planner_decision_tree"
+                "intent_routing",
+                "execution_completion"
             ],
-            "advanced_features": [
+            "integrated_features": [
+                "Google Calendar Service",
                 "Intent classification",
-                "Execution planning",
-                "Time normalization",
-                "Clarification flow",
-                "Multi-step reasoning"
+                "Natural language time processing",
+                "Clarification handling",
+                "Direct tool execution"
             ],
             "memory_management": "per_contact_isolation",
             "multi_user_support": False,
-            "description": "Serves one user and coordinates with their colleagues using LangGraph reasoning"
+            "description": "Simplified LangGraph agent with integrated calendar tools for direct execution"
         }
     except Exception as e:
         logger.error(f"Error getting agent info: {e}")

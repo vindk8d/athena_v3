@@ -130,25 +130,51 @@ Current context:
 
 Classify the intent and extract information:
 
-Intent categories:
-- meeting_request: Requesting to schedule a meeting/appointment
-- availability_inquiry: Asking about availability or free time
-- meeting_modification: Wanting to cancel, reschedule, or change existing meeting
-- calendar_inquiry: Asking about calendar, events, or schedule
-- timezone_question: Asking about timezone information
-- greeting: Greeting or social pleasantries
-- general_conversation: General conversation or unclear intent
+Intent categories with clear distinctions:
+
+- meeting_request: USER WANTS TO CREATE/SCHEDULE a new meeting
+  Keywords: "schedule", "book", "set up", "arrange", "can we meet", "let's meet"
+  Examples: "Can we schedule a meeting?", "Let's set up a call", "I'd like to book time with you"
+
+- calendar_inquiry: USER WANTS TO VIEW/CHECK existing calendar events  
+  Keywords: "what meetings", "do I have", "what's on my calendar", "show me", "what events"
+  Examples: "What meetings do I have today?", "What's on my calendar?", "Do I have any appointments?"
+
+- availability_inquiry: USER WANTS TO CHECK when someone is FREE/AVAILABLE
+  Keywords: "when are you free", "what's your availability", "when can we", "are you available"
+  Examples: "When are you free?", "What's your availability tomorrow?", "Are you available at 2pm?"
+
+- meeting_modification: USER WANTS TO CHANGE an existing meeting
+  Keywords: "cancel", "reschedule", "move", "change", "postpone", "update"  
+  Examples: "Can we reschedule our meeting?", "I need to cancel tomorrow's call"
+
+- timezone_question: USER ASKS about timezone information
+  Keywords: "timezone", "time zone", "what time is it", "local time"
+  Examples: "What timezone are you in?", "What time is it there?"
+
+- greeting: Social pleasantries and hellos
+  Keywords: "hello", "hi", "good morning", "how are you"
+  Examples: "Hello!", "Good morning", "How are you doing?"
+
+- general_conversation: Everything else or unclear intent
+  Examples: Unclear requests, off-topic conversation
+
+CRITICAL DISTINCTION:
+- If asking ABOUT existing events → calendar_inquiry  
+- If wanting to CREATE new events → meeting_request
+- If asking about FREE TIME → availability_inquiry
 
 Extract additional information:
 - is_calendar_related: Boolean - does this require calendar operations?
 - urgency_level: "low", "medium", or "high"
-- temporal_references: List of time references mentioned (e.g., ["tomorrow", "2 PM"])
+- temporal_references: List of time references mentioned (e.g., ["today", "tomorrow", "2 PM"])
 - has_specific_time: Boolean - does the query mention a specific time?
 - has_duration: Boolean - is meeting duration mentioned?
 - confidence: Your confidence in this classification (0.0-1.0)
 
-Response format:
-{{"intent": "meeting_request", "is_calendar_related": true, "urgency_level": "medium", "temporal_references": ["tomorrow", "2 PM"], "has_specific_time": true, "has_duration": false, "confidence": 0.9}}"""
+Response format examples:
+- For "What meetings do I have today?": {{"intent": "calendar_inquiry", "is_calendar_related": true, "urgency_level": "low", "temporal_references": ["today"], "has_specific_time": false, "has_duration": false, "confidence": 0.95}}
+- For "Can we schedule a meeting?": {{"intent": "meeting_request", "is_calendar_related": true, "urgency_level": "medium", "temporal_references": [], "has_specific_time": false, "has_duration": false, "confidence": 0.9}}"""
 
         try:
             response = await llm.ainvoke([HumanMessage(content=classification_prompt)])
@@ -194,6 +220,8 @@ Current datetime: {current_datetime.strftime('%Y-%m-%d %H:%M %Z')}
 User timezone: {user_timezone}
 
 Based on the intent, create a plan with required information and steps:
+
+Keep required information updated based on output from time_normalizer, clarification, and execution.
 
 For meeting_request:
 - Required info: title, start_datetime, end_datetime, (optional: attendee_emails, description, location)
@@ -412,13 +440,13 @@ class AthenaLangGraphAgent:
         )
         
         # From time normalizer to clarification
-        workflow.add_edge("time_normalizer", "clarification")
+        workflow.add_edge("time_normalizer", "planner")
         
         # From clarification to execution
-        workflow.add_edge("clarification", "execution")
+        workflow.add_edge("clarification", "response_generator")
         
         # From execution to response generator
-        workflow.add_edge("execution", "response_generator")
+        workflow.add_edge("execution", "planner")
         
         # End the graph at response generator
         workflow.set_finish_point("response_generator")
@@ -432,13 +460,22 @@ class AthenaLangGraphAgent:
         # Get the latest message
         latest_message = state["messages"][-1].content if state["messages"] else ""
         
-        # Get current datetime in user's timezone
-        user_tz = pytz.timezone(state["user_timezone"])
-        current_datetime = datetime.now(user_tz)
+        # Get current datetime in user's timezone with safety check
+        user_timezone = state.get("user_timezone", "UTC")
+        logger.info(f"Input interpreter using timezone: {user_timezone}")
+        
+        try:
+            user_tz = pytz.timezone(user_timezone)
+            current_datetime = datetime.now(user_tz)
+        except Exception as e:
+            logger.error(f"Error with timezone '{user_timezone}': {e}. Falling back to UTC.")
+            user_tz = pytz.timezone("UTC")
+            current_datetime = datetime.now(user_tz)
+            user_timezone = "UTC"
         
         # Classify intent
         intent_data = await IntentClassifier.classify_intent(
-            self.llm, latest_message, state["messages"], current_datetime, state["user_timezone"]
+            self.llm, latest_message, state["messages"], current_datetime, user_timezone
         )
         
         # Update state
@@ -460,16 +497,43 @@ class AthenaLangGraphAgent:
         latest_message = state["messages"][-1].content if state["messages"] else ""
         current_datetime = datetime.fromisoformat(state["current_datetime"])
         
-        # Create plan
-        plan_data = await PlannerAgent.create_plan(
-            self.llm, state["intent"], latest_message, current_datetime, state["user_timezone"]
-        )
+        # Get user timezone with safety check
+        user_timezone = state.get("user_timezone", "UTC")
         
-        # Update state
-        state["plan"] = plan_data["plan"]
-        state["plan_complete"] = plan_data["plan_complete"]
-        state["required_info"] = plan_data["required_info"]
-        state["missing_info"] = plan_data["missing_info"]
+        # Create plan (or use existing plan if already created)
+        if not state.get("plan"):
+            plan_data = await PlannerAgent.create_plan(
+                self.llm, state["intent"], latest_message, current_datetime, user_timezone
+            )
+            
+            # Update state with initial plan
+            state["plan"] = plan_data["plan"]
+            state["plan_complete"] = plan_data["plan_complete"]
+            state["required_info"] = plan_data["required_info"]
+            state["missing_info"] = plan_data["missing_info"]
+        
+        # Update plan based on normalized times and available information
+        if state.get("normalized_times"):
+            # Check what information we now have from normalized times
+            available_from_times = []
+            for time_ref, time_data in state["normalized_times"].items():
+                if "start_datetime" in time_data:
+                    available_from_times.append("start_datetime")
+                if "end_datetime" in time_data:
+                    available_from_times.append("end_datetime")
+            
+            # Remove datetime info from missing_info if we have normalized times
+            current_missing = state.get("missing_info", [])
+            updated_missing = [info for info in current_missing 
+                             if info not in available_from_times]
+            
+            state["missing_info"] = updated_missing
+            
+            # Update plan_complete status
+            if not updated_missing:
+                state["plan_complete"] = True
+            
+            logger.info(f"Updated missing info after time normalization: {updated_missing}")
         
         # Determine next step
         if state["temporal_references"] and not state.get("normalized_times"):
@@ -481,7 +545,7 @@ class AthenaLangGraphAgent:
         else:
             state["next_node"] = "response_generator"
         
-        logger.info(f"Plan created: {len(state['plan'])} steps, complete: {state['plan_complete']}")
+        logger.info(f"Plan status: {len(state['plan'])} steps, complete: {state['plan_complete']}, missing: {state.get('missing_info', [])}")
         
         return state
     
@@ -496,9 +560,12 @@ class AthenaLangGraphAgent:
         latest_message = state["messages"][-1].content if state["messages"] else ""
         current_datetime = datetime.fromisoformat(state["current_datetime"])
         
+        # Get user timezone with safety check
+        user_timezone = state.get("user_timezone", "UTC")
+        
         # Normalize times
         normalized_data = await TimeNormalizer.normalize_times(
-            self.llm, state["temporal_references"], latest_message, current_datetime, state["user_timezone"]
+            self.llm, state["temporal_references"], latest_message, current_datetime, user_timezone
         )
         
         # Update state
@@ -673,22 +740,62 @@ class AthenaLangGraphAgent:
         elif step["tool"] == "create_event":
             # Extract from normalized times or use defaults
             if state.get("normalized_times"):
+                # Use the first available normalized time
                 first_time = list(state["normalized_times"].values())[0]
                 tool_input["start_datetime"] = first_time["start_datetime"]
                 tool_input["end_datetime"] = first_time["end_datetime"]
+            else:
+                # Fallback: create a default meeting time
+                current_datetime = datetime.fromisoformat(state["current_datetime"])
+                default_start = current_datetime.replace(hour=14, minute=0, second=0, microsecond=0)  # 2 PM
+                default_end = default_start + timedelta(minutes=30)
+                tool_input["start_datetime"] = default_start.isoformat()
+                tool_input["end_datetime"] = default_end.isoformat()
             
-            tool_input["title"] = "Meeting"  # Default title
+            # Extract title from message or use default
+            tool_input["title"] = self._extract_meeting_title(latest_message)
             tool_input["attendee_emails"] = []  # Will be set by the system
             
         elif step["tool"] == "get_events":
-            current_datetime = datetime.fromisoformat(state["current_datetime"])
-            start_of_day = current_datetime.replace(hour=0, minute=0, second=0, microsecond=0)
-            end_of_day = current_datetime.replace(hour=23, minute=59, second=59, microsecond=999999)
-            
-            tool_input["start_datetime"] = start_of_day.isoformat()
-            tool_input["end_datetime"] = end_of_day.isoformat()
+            # Check if we have specific time range from normalized times
+            if state.get("normalized_times"):
+                # Use the time range from normalized times
+                first_time = list(state["normalized_times"].values())[0]
+                start_datetime = datetime.fromisoformat(first_time["start_datetime"].replace('Z', '+00:00'))
+                # For event queries, look at the whole day
+                start_of_day = start_datetime.replace(hour=0, minute=0, second=0, microsecond=0)
+                end_of_day = start_datetime.replace(hour=23, minute=59, second=59, microsecond=999999)
+                tool_input["start_datetime"] = start_of_day.isoformat()
+                tool_input["end_datetime"] = end_of_day.isoformat()
+            else:
+                # Default to current day
+                current_datetime = datetime.fromisoformat(state["current_datetime"])
+                start_of_day = current_datetime.replace(hour=0, minute=0, second=0, microsecond=0)
+                end_of_day = current_datetime.replace(hour=23, minute=59, second=59, microsecond=999999)
+                tool_input["start_datetime"] = start_of_day.isoformat()
+                tool_input["end_datetime"] = end_of_day.isoformat()
         
         return tool_input
+    
+    def _extract_meeting_title(self, message: str) -> str:
+        """Extract a meeting title from the message or return a default."""
+        # Simple extraction - look for common patterns
+        lower_msg = message.lower()
+        
+        if "meeting" in lower_msg:
+            return "Meeting"
+        elif "call" in lower_msg:
+            return "Call"
+        elif "sync" in lower_msg:
+            return "Sync"
+        elif "standup" in lower_msg:
+            return "Standup"
+        elif "review" in lower_msg:
+            return "Review"
+        elif "discussion" in lower_msg:
+            return "Discussion"
+        else:
+            return "Meeting"
     
     def _generate_response_from_tools(self, state: AthenaState) -> str:
         """Generate response from tool execution results."""
@@ -726,6 +833,7 @@ class AthenaLangGraphAgent:
         """Process an incoming message through the LangGraph workflow."""
         try:
             logger.info("🚀 Starting LangGraph execution")
+            logger.info(f"Input user_details: {user_details}")
             
             # Set up calendar service if needed
             if access_token:
@@ -735,15 +843,28 @@ class AthenaLangGraphAgent:
                     logger.error(f"Error setting up calendar service: {str(e)}")
                     # Continue execution without calendar service
             
-            # Get user timezone with fallback
+            # Get user timezone with robust fallback
             user_timezone = 'UTC'
             if user_details and isinstance(user_details, dict):
-                user_timezone = user_details.get('timezone', user_details.get('default_timezone', 'UTC'))
+                # Try multiple possible keys for timezone
+                user_timezone = user_details.get('timezone', 
+                                user_details.get('default_timezone', 
+                                user_details.get('user_timezone', 'UTC')))
+            
+            logger.info(f"Using user timezone: {user_timezone}")
+            
+            # Validate timezone
+            try:
+                pytz.timezone(user_timezone)  # This will raise an exception if invalid
+            except Exception as e:
+                logger.warning(f"Invalid timezone '{user_timezone}', falling back to UTC: {e}")
+                user_timezone = 'UTC'
             
             # Get current time in user's timezone
             current_datetime = datetime.now(pytz.timezone(user_timezone))
             
-            # Initialize state
+            # Initialize state with validated data
+            logger.info(f"Initializing state with user_timezone: {user_timezone}")
             initial_state = AthenaState(
                 messages=[HumanMessage(content=message)],
                 user_id=user_id,
@@ -868,3 +989,12 @@ def reset_agent():
     global _agent_instance
     _agent_instance = None
     logger.info("Global LangGraph agent instance reset")
+
+# Export graph for LangGraph Studio
+def _create_studio_graph():
+    """Create a compiled graph for LangGraph Studio."""
+    agent = get_agent()
+    return agent._create_graph()
+
+# Export the compiled graph for LangGraph Studio
+graph = _create_studio_graph()

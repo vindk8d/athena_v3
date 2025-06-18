@@ -1,0 +1,11 @@
+{
+  "dependencies": [
+    "."
+  ],
+  "graphs": {
+    "athena": "./agent.py:graph",
+    "athena-simple": "./agent-2.py:graph",
+    "athena-elegant": "./agent_main.py:athena_elegant_graph"
+  },
+  "env": "./studio/langgraph_studio.env"
+} 

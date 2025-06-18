@@ -1,0 +1,3 @@
+[console_scripts]
+langgraph-studio=app.cli:cli
+

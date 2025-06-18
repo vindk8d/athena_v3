@@ -1,0 +1,9 @@
+{
+  "dependencies": [
+    ".."
+  ],
+  "graphs": {
+    "athena_agent": "./studio_agent.py:graph"
+  },
+  "env": "./langgraph_studio.env"
+} 

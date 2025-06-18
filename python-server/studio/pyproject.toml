@@ -1,0 +1,26 @@
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry]
+name = "athena-langgraph-studio"
+version = "0.1.0"
+description = "LangGraph Studio setup for Athena Executive Assistant Agent"
+authors = ["Athena Team"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+langgraph = "^0.0.26"
+langchain = "^0.1.0"
+langchain-openai = "^0.0.5"
+langchain-community = "^0.0.17"
+langsmith = "^0.1.0"
+fastapi = "^0.104.0"
+uvicorn = "^0.24.0"
+python-dotenv = "^1.0.0"
+
+
+
+[tool.poetry.group.dev.dependencies]
+langchain-cli = "^0.0.36" 

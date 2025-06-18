@@ -1,6 +1,58 @@
-# LangGraph Studio Setup for Athena Agent
+# LangGraph Studio Setup
 
-This directory contains all the files needed to debug your Athena executive assistant agent using LangGraph Studio.
+This directory contains the configuration for LangGraph Studio, which provides a visual interface for debugging and testing the Athena agent.
+
+## Environment Setup
+
+1. **Copy the example environment file:**
+   ```bash
+   cp langgraph_studio.env.example langgraph_studio.env
+   ```
+
+2. **Fill in your actual API keys and credentials:**
+   Edit `langgraph_studio.env` and replace the placeholder values with your actual credentials:
+
+   - `SUPABASE_URL`: Your Supabase project URL
+   - `SUPABASE_ANON_KEY`: Your Supabase anonymous key
+   - `SUPABASE_SERVICE_ROLE_KEY`: Your Supabase service role key
+   - `TELEGRAM_BOT_TOKEN`: Your Telegram bot token from BotFather
+   - `OPENAI_API_KEY`: Your OpenAI API key
+   - `GOOGLE_CLIENT_ID`: Your Google OAuth client ID
+   - `GOOGLE_CLIENT_SECRET`: Your Google OAuth client secret
+   - `LANGCHAIN_API_KEY`: Your LangChain API key (optional, for tracing)
+
+## Running LangGraph Studio
+
+1. **Install dependencies:**
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+2. **Start the studio:**
+   ```bash
+   python setup_studio.py
+   ```
+
+3. **Access the studio:**
+   Open your browser and go to the URL shown in the terminal (usually `http://localhost:8123`)
+
+## Security Notes
+
+- The `langgraph_studio.env` file is ignored by git to prevent accidentally committing secrets
+- Always use the `.env.example` file as a template
+- Never commit actual API keys or secrets to version control
+- Consider using a secrets management service for production deployments
+
+## Troubleshooting
+
+If you encounter issues:
+
+1. Make sure all required environment variables are set
+2. Check that your API keys are valid and have the necessary permissions
+3. Ensure your Google OAuth credentials are properly configured
+4. Verify that your Supabase project is accessible
+
+For more information, see the main project README.
 
 ## 📁 Files in this Directory
 

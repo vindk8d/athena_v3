@@ -1,6 +1,7 @@
 # Environment variables
 .env
 .env.*
+python-server/studio/langgraph_studio.env
 
 # Node modules and build output
 node_modules/

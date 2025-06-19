@@ -27,148 +27,196 @@ logger = logging.getLogger(__name__)
 _llm_instance = None
 
 # --- Helper functions copied from tools.py for tool self-containment ---
-def parse_relative_time_reference(time_ref: str, user_timezone: str = "UTC", base_datetime: datetime = None) -> tuple:
-    """Parse relative time references like 'tomorrow', 'next week', etc. into datetime ranges."""
+async def parse_time_with_llm(time_reference: str, timezone: str = "UTC", base_datetime: datetime = None) -> tuple:
+    """Parse time references using LLM for more robust natural language understanding."""
     try:
         if base_datetime is None:
-            base_datetime = datetime.now(pytz.timezone(user_timezone))
+            base_datetime = datetime.now(pytz.timezone(timezone))
         if base_datetime.tzinfo is None:
-            base_datetime = pytz.timezone(user_timezone).localize(base_datetime)
+            base_datetime = pytz.timezone(timezone).localize(base_datetime)
+        
+        # Get LLM instance
+        llm = get_llm_instance()
+        if not llm:
+            logger.warning("LLM instance not available, falling back to basic parsing")
+            return _fallback_time_parsing(time_reference, timezone, base_datetime)
+        
+        # Create a prompt for time parsing
+        time_parsing_prompt = f"""You are a time parsing expert. Convert the given time reference to exact start and end times.
+
+Current time: {base_datetime.strftime('%Y-%m-%d %H:%M:%S %Z')}
+Timezone: {timezone}
+Time reference: "{time_reference}"
+
+Rules:
+1. Convert relative references like "tomorrow", "next week", "monday" to actual dates
+2. For specific times like "10 AM", "2:30 PM", use the exact time
+3. For time periods like "morning", "afternoon", use reasonable defaults (9 AM-12 PM for morning, 2 PM-5 PM for afternoon)
+4. For single time points, create a 30-minute slot
+5. For date-only references, use 8 AM-6 PM as default business hours
+6. Always return times in the specified timezone
+
+Return ONLY a JSON object with this exact format:
+{{
+    "start_time": "YYYY-MM-DDTHH:MM:SS+HH:MM",
+    "end_time": "YYYY-MM-DDTHH:MM:SS+HH:MM",
+    "explanation": "Brief explanation of the conversion"
+}}
+
+Examples:
+- "tomorrow at 10 AM" → {{"start_time": "2024-01-16T10:00:00+08:00", "end_time": "2024-01-16T10:30:00+08:00", "explanation": "Tomorrow at 10 AM for 30 minutes"}}
+- "next monday" → {{"start_time": "2024-01-22T08:00:00+08:00", "end_time": "2024-01-22T18:00:00+08:00", "explanation": "Next Monday business hours"}}
+- "2 PM" → {{"start_time": "2024-01-15T14:00:00+08:00", "end_time": "2024-01-15T14:30:00+08:00", "explanation": "Today at 2 PM for 30 minutes"}}
+
+JSON response:"""
+
+        try:
+            # Use the LLM to parse the time
+            response = await llm.ainvoke([HumanMessage(content=time_parsing_prompt)])
+            response_text = response.content.strip()
+            
+            # Extract JSON from the response
+            json_start = response_text.find('{')
+            json_end = response_text.rfind('}') + 1
+            if json_start != -1 and json_end > json_start:
+                json_str = response_text[json_start:json_end]
+                parsed = json.loads(json_str)
+                
+                # Convert string times to datetime objects
+                start_time = datetime.fromisoformat(parsed['start_time'].replace('Z', '+00:00'))
+                end_time = datetime.fromisoformat(parsed['end_time'].replace('Z', '+00:00'))
+                
+                logger.info(f"LLM parsed '{time_reference}' to: {start_time.isoformat()} - {end_time.isoformat()}")
+                return start_time, end_time
+            else:
+                logger.warning(f"Could not extract JSON from LLM response: {response_text}")
+                return _fallback_time_parsing(time_reference, timezone, base_datetime)
+                
+        except Exception as e:
+            logger.error(f"LLM time parsing failed: {e}")
+            return _fallback_time_parsing(time_reference, timezone, base_datetime)
+            
+    except Exception as e:
+        logger.error(f"Error in parse_time_with_llm: {e}")
+        return _fallback_time_parsing(time_reference, timezone, base_datetime)
+
+def _fallback_time_parsing(time_ref: str, timezone: str = "UTC", base_datetime: datetime = None) -> tuple:
+    """Fallback time parsing for when LLM is not available."""
+    try:
+        if base_datetime is None:
+            base_datetime = datetime.now(pytz.timezone(timezone))
+        if base_datetime.tzinfo is None:
+            base_datetime = pytz.timezone(timezone).localize(base_datetime)
+        
         time_ref_lower = time_ref.lower().strip()
-        specific_time = None
-        time_patterns = [
-            r'(\d{1,2}):(\d{2})\s*(am|pm)?',
-            r'(\d{1,2})\s*(am|pm)',
-            r'(\d{1,2})\s*o\'?clock',
-        ]
-        for pattern in time_patterns:
-            match = re.search(pattern, time_ref_lower)
-            if match:
-                hour = int(match.group(1))
-                minute = int(match.group(2)) if len(match.groups()) > 1 and match.group(2) else 0
-                ampm = match.group(3) if len(match.groups()) > 2 else None
-                if ampm:
-                    if ampm == 'pm' and hour != 12:
-                        hour += 12
-                    elif ampm == 'am' and hour == 12:
-                        hour = 0
-                specific_time = (hour, minute)
-                break
-        named_times = {
-            'noon': 12, 'midnight': 0, 'morning': 9, 'afternoon': 14, 
-            'evening': 18, 'night': 20, 'lunchtime': 12
-        }
-        if not specific_time:
-            for name, hour in named_times.items():
-                if name in time_ref_lower:
-                    specific_time = (hour, 0)
-                    break
-        if time_ref_lower in ['today']:
-            if specific_time:
-                start = base_datetime.replace(hour=specific_time[0], minute=specific_time[1], second=0, microsecond=0)
-                end = start + timedelta(minutes=30)
-            else:
-                start = base_datetime.replace(hour=8, minute=0, second=0, microsecond=0)
-                end = base_datetime.replace(hour=18, minute=0, second=0, microsecond=0)
-        elif time_ref_lower in ['tomorrow']:
-            tomorrow = base_datetime + timedelta(days=1)
-            if specific_time:
-                start = tomorrow.replace(hour=specific_time[0], minute=specific_time[1], second=0, microsecond=0)
-                end = start + timedelta(minutes=30)
-            else:
-                start = tomorrow.replace(hour=8, minute=0, second=0, microsecond=0)
-                end = tomorrow.replace(hour=18, minute=0, second=0, microsecond=0)
-        elif time_ref_lower in ['next week', 'next_week']:
+        
+        # Simple fallback logic
+        if 'tomorrow' in time_ref_lower:
+            target_date = base_datetime + timedelta(days=1)
+        elif 'next week' in time_ref_lower:
             days_ahead = 7 - base_datetime.weekday()
             if days_ahead <= 0:
                 days_ahead += 7
-            next_monday = base_datetime + timedelta(days=days_ahead)
-            start = next_monday.replace(hour=8, minute=0, second=0, microsecond=0)
-            end = (next_monday + timedelta(days=4)).replace(hour=18, minute=0, second=0, microsecond=0)
-        elif time_ref_lower in ['this week', 'this_week']:
-            if base_datetime.weekday() >= 5:
-                days_ahead = 7 - base_datetime.weekday()
-                start_day = base_datetime + timedelta(days=days_ahead)
-            else:
-                start_day = base_datetime
-            start = start_day.replace(hour=8, minute=0, second=0, microsecond=0)
-            days_to_friday = 4 - start_day.weekday()
-            if days_to_friday < 0:
-                days_to_friday += 7
-            end_day = start_day + timedelta(days=days_to_friday)
-            end = end_day.replace(hour=18, minute=0, second=0, microsecond=0)
-        elif time_ref_lower in ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']:
-            weekdays = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']
-            target_weekday = weekdays.index(time_ref_lower)
-            days_ahead = target_weekday - base_datetime.weekday()
+            target_date = base_datetime + timedelta(days=days_ahead)
+        elif 'monday' in time_ref_lower:
+            days_ahead = 0 - base_datetime.weekday()  # Monday is 0
             if days_ahead <= 0:
                 days_ahead += 7
-            target_day = base_datetime + timedelta(days=days_ahead)
-            if specific_time:
-                start = target_day.replace(hour=specific_time[0], minute=specific_time[1], second=0, microsecond=0)
-                end = start + timedelta(minutes=30)
-            else:
-                start = target_day.replace(hour=8, minute=0, second=0, microsecond=0)
-                end = target_day.replace(hour=18, minute=0, second=0, microsecond=0)
+            target_date = base_datetime + timedelta(days=days_ahead)
+        elif 'tuesday' in time_ref_lower:
+            days_ahead = 1 - base_datetime.weekday()
+            if days_ahead <= 0:
+                days_ahead += 7
+            target_date = base_datetime + timedelta(days=days_ahead)
+        elif 'wednesday' in time_ref_lower:
+            days_ahead = 2 - base_datetime.weekday()
+            if days_ahead <= 0:
+                days_ahead += 7
+            target_date = base_datetime + timedelta(days=days_ahead)
+        elif 'thursday' in time_ref_lower:
+            days_ahead = 3 - base_datetime.weekday()
+            if days_ahead <= 0:
+                days_ahead += 7
+            target_date = base_datetime + timedelta(days=days_ahead)
+        elif 'friday' in time_ref_lower:
+            days_ahead = 4 - base_datetime.weekday()
+            if days_ahead <= 0:
+                days_ahead += 7
+            target_date = base_datetime + timedelta(days=days_ahead)
         else:
-            logger.warning(f"Could not parse time reference '{time_ref}', defaulting to today")
-            if specific_time:
-                start = base_datetime.replace(hour=specific_time[0], minute=specific_time[1], second=0, microsecond=0)
-                end = start + timedelta(minutes=30)
-            else:
-                start = base_datetime.replace(hour=8, minute=0, second=0, microsecond=0)
-                end = base_datetime.replace(hour=18, minute=0, second=0, microsecond=0)
-        logger.info(f"Parsed '{time_ref}' to range: {start.isoformat()} - {end.isoformat()}")
-        return start, end
+            target_date = base_datetime
+        
+        # Extract time if present
+        hour = 8  # Default to 8 AM
+        minute = 0
+        
+        # Simple time extraction
+        if '10 am' in time_ref_lower or '10:00 am' in time_ref_lower:
+            hour, minute = 10, 0
+        elif '11 am' in time_ref_lower or '11:00 am' in time_ref_lower:
+            hour, minute = 11, 0
+        elif '12 pm' in time_ref_lower or '12:00 pm' in time_ref_lower or 'noon' in time_ref_lower:
+            hour, minute = 12, 0
+        elif '1 pm' in time_ref_lower or '1:00 pm' in time_ref_lower or '13:00' in time_ref_lower:
+            hour, minute = 13, 0
+        elif '2 pm' in time_ref_lower or '2:00 pm' in time_ref_lower or '14:00' in time_ref_lower:
+            hour, minute = 14, 0
+        elif '3 pm' in time_ref_lower or '3:00 pm' in time_ref_lower or '15:00' in time_ref_lower:
+            hour, minute = 15, 0
+        elif '4 pm' in time_ref_lower or '4:00 pm' in time_ref_lower or '16:00' in time_ref_lower:
+            hour, minute = 16, 0
+        elif '5 pm' in time_ref_lower or '5:00 pm' in time_ref_lower or '17:00' in time_ref_lower:
+            hour, minute = 17, 0
+        elif '6 pm' in time_ref_lower or '6:00 pm' in time_ref_lower or '18:00' in time_ref_lower:
+            hour, minute = 18, 0
+        elif '9 am' in time_ref_lower or '9:00 am' in time_ref_lower:
+            hour, minute = 9, 0
+        elif '8 am' in time_ref_lower or '8:00 am' in time_ref_lower:
+            hour, minute = 8, 0
+        
+        start_time = target_date.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        end_time = start_time + timedelta(minutes=30)
+        
+        logger.info(f"Fallback parsed '{time_ref}' to: {start_time.isoformat()} - {end_time.isoformat()}")
+        return start_time, end_time
+        
     except Exception as e:
-        logger.error(f"Error parsing time reference '{time_ref}': {e}")
+        logger.error(f"Fallback time parsing failed: {e}")
+        # Ultimate fallback
         fallback_start = base_datetime.replace(hour=8, minute=0, second=0, microsecond=0)
-        fallback_end = base_datetime.replace(hour=18, minute=0, second=0, microsecond=0)
+        fallback_end = fallback_start + timedelta(minutes=30)
         return fallback_start, fallback_end
 
-def parse_specific_time_from_query(query: str, temporal_reference: str, user_timezone: str, base_datetime: datetime) -> tuple:
-    """Parse specific time from query when in specific_slot_inquiry mode."""
+async def parse_relative_time_reference(time_ref: str, user_timezone: str = "UTC", base_datetime: datetime = None) -> tuple:
+    """Parse relative time references like 'tomorrow', 'next week', etc. into datetime ranges.
+    
+    This function now uses LLM-based parsing for robust natural language understanding.
+    For backward compatibility, this is an async function that delegates to parse_time_with_llm.
+    """
     try:
-        start_datetime, end_datetime = parse_relative_time_reference(temporal_reference, user_timezone, base_datetime)
-        query_lower = query.lower()
-        time_patterns = [
-            r'(\d{1,2}):(\d{2})\s*(am|pm)?',
-            r'(\d{1,2})\s*(am|pm)',
-            r'(\d{1,2})\s*o\'?clock',
-        ]
-        specific_time = None
-        for pattern in time_patterns:
-            match = re.search(pattern, query_lower)
-            if match:
-                hour = int(match.group(1))
-                minute = int(match.group(2)) if len(match.groups()) > 1 and match.group(2) else 0
-                ampm = match.group(3) if len(match.groups()) > 2 else None
-                if ampm:
-                    if ampm == 'pm' and hour != 12:
-                        hour += 12
-                    elif ampm == 'am' and hour == 12:
-                        hour = 0
-                specific_time = start_datetime.replace(hour=hour, minute=minute, second=0, microsecond=0)
-                break
-        named_times = {
-            'noon': 12, 'midnight': 0, 'morning': 9, 'afternoon': 14, 
-            'evening': 18, 'night': 20, 'lunchtime': 12
-        }
-        if not specific_time:
-            for name, hour in named_times.items():
-                if name in query_lower:
-                    specific_time = start_datetime.replace(hour=hour, minute=0, second=0, microsecond=0)
-                    break
-        if specific_time:
-            end_time = specific_time + timedelta(minutes=30)
-            logger.info(f"Parsed specific time from '{query}': {specific_time.isoformat()} to {end_time.isoformat()}")
-            return specific_time, end_time
-        else:
-            logger.info(f"Could not parse specific time from '{query}', using temporal reference range")
-            return start_datetime, end_datetime
+        return await parse_time_with_llm(time_ref, user_timezone, base_datetime)
+    except Exception as e:
+        logger.error(f"Error in parse_relative_time_reference for '{time_ref}': {e}")
+        # Fallback to the old function for maximum compatibility
+        return _fallback_time_parsing(time_ref, user_timezone, base_datetime)
+
+async def parse_specific_time_from_query(query: str, temporal_reference: str, user_timezone: str, base_datetime: datetime) -> tuple:
+    """Parse specific time from query when in specific_slot_inquiry mode.
+    
+    This function now uses LLM-based parsing for robust natural language understanding.
+    It combines the temporal reference with the specific time query for intelligent parsing.
+    """
+    try:
+        # Combine the temporal reference with the specific time query
+        combined_time_ref = f"{temporal_reference} at {query}"
+        
+        # Use the new LLM-based time parsing function
+        return await parse_time_with_llm(combined_time_ref, user_timezone, base_datetime)
+        
     except Exception as e:
         logger.error(f"Error parsing specific time from query '{query}': {e}")
-        return parse_relative_time_reference(temporal_reference, user_timezone, base_datetime)
+        # Fallback to the temporal reference only
+        return await parse_relative_time_reference(temporal_reference, user_timezone, base_datetime)
 
 def find_available_slots(busy_times: List[Dict], start_datetime: datetime, end_datetime: datetime, slot_duration_minutes: int = 30) -> List[Dict[str, str]]:
     """Find available time slots within a time range, avoiding busy periods."""
@@ -559,7 +607,7 @@ async def check_availability_tool(query: str, duration_minutes: int = 30) -> str
             current_datetime = datetime.now(pytz.timezone(user_timezone))
             
             # Parse the query to determine time range
-            start_datetime, end_datetime = parse_relative_time_reference(query, user_timezone, current_datetime)
+            start_datetime, end_datetime = await parse_time_with_llm(query, user_timezone, current_datetime)
             
             # Check if the requested time is in the past
             if start_datetime < current_datetime:
@@ -586,7 +634,7 @@ async def check_availability_tool(query: str, duration_minutes: int = 30) -> str
                 
                 # Parse the query to determine time range (using UTC)
                 current_datetime = datetime.now(pytz.UTC)
-                start_datetime, end_datetime = parse_relative_time_reference(query, "UTC", current_datetime)
+                start_datetime, end_datetime = await parse_time_with_llm(query, "UTC", current_datetime)
                 
                 # Demo response - simulate availability check
                 if "tomorrow" in query.lower() or "next" in query.lower():
@@ -800,11 +848,11 @@ def get_current_time_tool(timezone: str = None) -> str:
         return f"I had trouble getting the current time for timezone {timezone}."
 
 @tool
-def convert_relative_time_tool(time_reference: str, timezone: str = "UTC") -> str:
+async def convert_relative_time_tool(time_reference: str, timezone: str = "UTC") -> str:
     """Convert relative time references like 'tomorrow at 10 AM' to ISO datetime format.
     
     This tool helps convert natural language time references to proper ISO datetime format
-    for use with other calendar tools.
+    for use with other calendar tools. Uses intelligent LLM-based parsing for robust understanding.
     
     Args:
         time_reference: Natural language time reference (e.g., 'tomorrow at 10 AM', 'next Monday at 2 PM')
@@ -814,8 +862,8 @@ def convert_relative_time_tool(time_reference: str, timezone: str = "UTC") -> st
         tz = pytz.timezone(timezone)
         current_time = datetime.now(tz)
         
-        # Use the existing time parsing function
-        start_time, end_time = parse_relative_time_reference(time_reference, timezone, current_time)
+        # Use the new LLM-based time parsing function
+        start_time, end_time = await parse_time_with_llm(time_reference, timezone, current_time)
         
         return f"'{time_reference}' converts to: {start_time.isoformat()} to {end_time.isoformat()}"
         
@@ -1113,7 +1161,7 @@ async def get_available_slots_for_period_tool(time_period: str, duration_minutes
             current_datetime = datetime.now(pytz.timezone(user_timezone))
             
             # Parse the time period to get start and end times
-            start_datetime, end_datetime = parse_relative_time_reference(time_period, user_timezone, current_datetime)
+            start_datetime, end_datetime = await parse_time_with_llm(time_period, user_timezone, current_datetime)
             
             # Check if the requested time is in the past
             if start_datetime < current_datetime:
@@ -1150,7 +1198,7 @@ async def get_available_slots_for_period_tool(time_period: str, duration_minutes
                 
                 # Parse the time period (using UTC)
                 current_datetime = datetime.now(pytz.UTC)
-                start_datetime, end_datetime = parse_relative_time_reference(time_period, "UTC", current_datetime)
+                start_datetime, end_datetime = await parse_time_with_llm(time_period, "UTC", current_datetime)
                 
                 # Demo response with sample available slots
                 result = f"✅ Demo mode: Available {duration_minutes}-minute slots for {time_period}:\n"
@@ -1168,11 +1216,12 @@ async def get_available_slots_for_period_tool(time_period: str, duration_minutes
         return f"I had trouble finding available slots for {time_period}. Please try again or provide a more specific time period."
 
 @tool
-def parse_specific_time_tool(query: str, temporal_reference: str, timezone: str = "UTC") -> str:
+async def parse_specific_time_tool(query: str, temporal_reference: str, timezone: str = "UTC") -> str:
     """Parse specific time from a query when you have a temporal reference.
     
     This tool helps extract specific times from natural language queries when you know the general time period.
     Useful for converting "2 PM tomorrow" into exact datetime when you know "tomorrow" refers to a specific date.
+    Uses intelligent LLM-based parsing for robust understanding.
     
     Args:
         query: The query containing specific time information (e.g., "2 PM", "10:30 AM")
@@ -1183,8 +1232,11 @@ def parse_specific_time_tool(query: str, temporal_reference: str, timezone: str 
         tz = pytz.timezone(timezone)
         current_time = datetime.now(tz)
         
-        # Call the helper function
-        start_time, end_time = parse_specific_time_from_query(query, temporal_reference, timezone, current_time)
+        # Combine the temporal reference with the specific time query
+        combined_time_ref = f"{temporal_reference} at {query}"
+        
+        # Use the new LLM-based time parsing function
+        start_time, end_time = await parse_time_with_llm(combined_time_ref, timezone, current_time)
         
         return f"Parsed '{query}' with reference '{temporal_reference}' to: {start_time.isoformat()} to {end_time.isoformat()}"
         

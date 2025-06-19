@@ -26,197 +26,197 @@ logger = logging.getLogger(__name__)
 # Global LLM instance for availability mode detection
 _llm_instance = None
 
-# --- Helper functions copied from tools.py for tool self-containment ---
-async def parse_time_with_llm(time_reference: str, timezone: str = "UTC", base_datetime: datetime = None) -> tuple:
-    """Parse time references using LLM for more robust natural language understanding."""
-    try:
-        if base_datetime is None:
-            base_datetime = datetime.now(pytz.timezone(timezone))
-        if base_datetime.tzinfo is None:
-            base_datetime = pytz.timezone(timezone).localize(base_datetime)
+# # --- Helper functions copied from tools.py for tool self-containment ---
+# async def parse_time_with_llm(time_reference: str, timezone: str = "UTC", base_datetime: datetime = None) -> tuple:
+#     """Parse time references using LLM for more robust natural language understanding."""
+#     try:
+#         if base_datetime is None:
+#             base_datetime = datetime.now(pytz.timezone(timezone))
+#         if base_datetime.tzinfo is None:
+#             base_datetime = pytz.timezone(timezone).localize(base_datetime)
         
-        # Get LLM instance
-        llm = get_llm_instance()
-        if not llm:
-            logger.warning("LLM instance not available, falling back to basic parsing")
-            return _fallback_time_parsing(time_reference, timezone, base_datetime)
+#         # Get LLM instance
+#         llm = get_llm_instance()
+#         if not llm:
+#             logger.warning("LLM instance not available, falling back to basic parsing")
+#             return _fallback_time_parsing(time_reference, timezone, base_datetime)
         
-        # Create a prompt for time parsing
-        time_parsing_prompt = f"""You are a time parsing expert. Convert the given time reference to exact start and end times.
+#         # Create a prompt for time parsing
+#         time_parsing_prompt = f"""You are a time parsing expert. Convert the given time reference to exact start and end times.
 
-Current time: {base_datetime.strftime('%Y-%m-%d %H:%M:%S %Z')}
-Timezone: {timezone}
-Time reference: "{time_reference}"
+# Current time: {base_datetime.strftime('%Y-%m-%d %H:%M:%S %Z')}
+# Timezone: {timezone}
+# Time reference: "{time_reference}"
 
-Rules:
-1. Convert relative references like "tomorrow", "next week", "monday" to actual dates
-2. For specific times like "10 AM", "2:30 PM", use the exact time
-3. For time periods like "morning", "afternoon", use reasonable defaults (9 AM-12 PM for morning, 2 PM-5 PM for afternoon)
-4. For single time points, create a 30-minute slot
-5. For date-only references, use 8 AM-6 PM as default business hours
-6. Always return times in the specified timezone
+# Rules:
+# 1. Convert relative references like "tomorrow", "next week", "monday" to actual dates
+# 2. For specific times like "10 AM", "2:30 PM", use the exact time
+# 3. For time periods like "morning", "afternoon", use reasonable defaults (9 AM-12 PM for morning, 2 PM-5 PM for afternoon)
+# 4. For single time points, create a 30-minute slot
+# 5. For date-only references, use 8 AM-6 PM as default business hours
+# 6. Always return times in the specified timezone
 
-Return ONLY a JSON object with this exact format:
-{{
-    "start_time": "YYYY-MM-DDTHH:MM:SS+HH:MM",
-    "end_time": "YYYY-MM-DDTHH:MM:SS+HH:MM",
-    "explanation": "Brief explanation of the conversion"
-}}
+# Return ONLY a JSON object with this exact format:
+# {{
+#     "start_time": "YYYY-MM-DDTHH:MM:SS+HH:MM",
+#     "end_time": "YYYY-MM-DDTHH:MM:SS+HH:MM",
+#     "explanation": "Brief explanation of the conversion"
+# }}
 
-Examples:
-- "tomorrow at 10 AM" → {{"start_time": "2024-01-16T10:00:00+08:00", "end_time": "2024-01-16T10:30:00+08:00", "explanation": "Tomorrow at 10 AM for 30 minutes"}}
-- "next monday" → {{"start_time": "2024-01-22T08:00:00+08:00", "end_time": "2024-01-22T18:00:00+08:00", "explanation": "Next Monday business hours"}}
-- "2 PM" → {{"start_time": "2024-01-15T14:00:00+08:00", "end_time": "2024-01-15T14:30:00+08:00", "explanation": "Today at 2 PM for 30 minutes"}}
+# Examples:
+# - "tomorrow at 10 AM" → {{"start_time": "2024-01-16T10:00:00+08:00", "end_time": "2024-01-16T10:30:00+08:00", "explanation": "Tomorrow at 10 AM for 30 minutes"}}
+# - "next monday" → {{"start_time": "2024-01-22T08:00:00+08:00", "end_time": "2024-01-22T18:00:00+08:00", "explanation": "Next Monday business hours"}}
+# - "2 PM" → {{"start_time": "2024-01-15T14:00:00+08:00", "end_time": "2024-01-15T14:30:00+08:00", "explanation": "Today at 2 PM for 30 minutes"}}
 
-JSON response:"""
+# JSON response:"""
 
-        try:
-            # Use the LLM to parse the time
-            response = await llm.ainvoke([HumanMessage(content=time_parsing_prompt)])
-            response_text = response.content.strip()
+#         try:
+#             # Use the LLM to parse the time
+#             response = await llm.ainvoke([HumanMessage(content=time_parsing_prompt)])
+#             response_text = response.content.strip()
             
-            # Extract JSON from the response
-            json_start = response_text.find('{')
-            json_end = response_text.rfind('}') + 1
-            if json_start != -1 and json_end > json_start:
-                json_str = response_text[json_start:json_end]
-                parsed = json.loads(json_str)
+#             # Extract JSON from the response
+#             json_start = response_text.find('{')
+#             json_end = response_text.rfind('}') + 1
+#             if json_start != -1 and json_end > json_start:
+#                 json_str = response_text[json_start:json_end]
+#                 parsed = json.loads(json_str)
                 
-                # Convert string times to datetime objects
-                start_time = datetime.fromisoformat(parsed['start_time'].replace('Z', '+00:00'))
-                end_time = datetime.fromisoformat(parsed['end_time'].replace('Z', '+00:00'))
+#                 # Convert string times to datetime objects
+#                 start_time = datetime.fromisoformat(parsed['start_time'].replace('Z', '+00:00'))
+#                 end_time = datetime.fromisoformat(parsed['end_time'].replace('Z', '+00:00'))
                 
-                logger.info(f"LLM parsed '{time_reference}' to: {start_time.isoformat()} - {end_time.isoformat()}")
-                return start_time, end_time
-            else:
-                logger.warning(f"Could not extract JSON from LLM response: {response_text}")
-                return _fallback_time_parsing(time_reference, timezone, base_datetime)
+#                 logger.info(f"LLM parsed '{time_reference}' to: {start_time.isoformat()} - {end_time.isoformat()}")
+#                 return start_time, end_time
+#             else:
+#                 logger.warning(f"Could not extract JSON from LLM response: {response_text}")
+#                 return _fallback_time_parsing(time_reference, timezone, base_datetime)
                 
-        except Exception as e:
-            logger.error(f"LLM time parsing failed: {e}")
-            return _fallback_time_parsing(time_reference, timezone, base_datetime)
+#         except Exception as e:
+#             logger.error(f"LLM time parsing failed: {e}")
+#             return _fallback_time_parsing(time_reference, timezone, base_datetime)
             
-    except Exception as e:
-        logger.error(f"Error in parse_time_with_llm: {e}")
-        return _fallback_time_parsing(time_reference, timezone, base_datetime)
+#     except Exception as e:
+#         logger.error(f"Error in parse_time_with_llm: {e}")
+#         return _fallback_time_parsing(time_reference, timezone, base_datetime)
 
-def _fallback_time_parsing(time_ref: str, timezone: str = "UTC", base_datetime: datetime = None) -> tuple:
-    """Fallback time parsing for when LLM is not available."""
-    try:
-        if base_datetime is None:
-            base_datetime = datetime.now(pytz.timezone(timezone))
-        if base_datetime.tzinfo is None:
-            base_datetime = pytz.timezone(timezone).localize(base_datetime)
+# def _fallback_time_parsing(time_ref: str, timezone: str = "UTC", base_datetime: datetime = None) -> tuple:
+#     """Fallback time parsing for when LLM is not available."""
+#     try:
+#         if base_datetime is None:
+#             base_datetime = datetime.now(pytz.timezone(timezone))
+#         if base_datetime.tzinfo is None:
+#             base_datetime = pytz.timezone(timezone).localize(base_datetime)
         
-        time_ref_lower = time_ref.lower().strip()
+#         time_ref_lower = time_ref.lower().strip()
         
-        # Simple fallback logic
-        if 'tomorrow' in time_ref_lower:
-            target_date = base_datetime + timedelta(days=1)
-        elif 'next week' in time_ref_lower:
-            days_ahead = 7 - base_datetime.weekday()
-            if days_ahead <= 0:
-                days_ahead += 7
-            target_date = base_datetime + timedelta(days=days_ahead)
-        elif 'monday' in time_ref_lower:
-            days_ahead = 0 - base_datetime.weekday()  # Monday is 0
-            if days_ahead <= 0:
-                days_ahead += 7
-            target_date = base_datetime + timedelta(days=days_ahead)
-        elif 'tuesday' in time_ref_lower:
-            days_ahead = 1 - base_datetime.weekday()
-            if days_ahead <= 0:
-                days_ahead += 7
-            target_date = base_datetime + timedelta(days=days_ahead)
-        elif 'wednesday' in time_ref_lower:
-            days_ahead = 2 - base_datetime.weekday()
-            if days_ahead <= 0:
-                days_ahead += 7
-            target_date = base_datetime + timedelta(days=days_ahead)
-        elif 'thursday' in time_ref_lower:
-            days_ahead = 3 - base_datetime.weekday()
-            if days_ahead <= 0:
-                days_ahead += 7
-            target_date = base_datetime + timedelta(days=days_ahead)
-        elif 'friday' in time_ref_lower:
-            days_ahead = 4 - base_datetime.weekday()
-            if days_ahead <= 0:
-                days_ahead += 7
-            target_date = base_datetime + timedelta(days=days_ahead)
-        else:
-            target_date = base_datetime
+#         # Simple fallback logic
+#         if 'tomorrow' in time_ref_lower:
+#             target_date = base_datetime + timedelta(days=1)
+#         elif 'next week' in time_ref_lower:
+#             days_ahead = 7 - base_datetime.weekday()
+#             if days_ahead <= 0:
+#                 days_ahead += 7
+#             target_date = base_datetime + timedelta(days=days_ahead)
+#         elif 'monday' in time_ref_lower:
+#             days_ahead = 0 - base_datetime.weekday()  # Monday is 0
+#             if days_ahead <= 0:
+#                 days_ahead += 7
+#             target_date = base_datetime + timedelta(days=days_ahead)
+#         elif 'tuesday' in time_ref_lower:
+#             days_ahead = 1 - base_datetime.weekday()
+#             if days_ahead <= 0:
+#                 days_ahead += 7
+#             target_date = base_datetime + timedelta(days=days_ahead)
+#         elif 'wednesday' in time_ref_lower:
+#             days_ahead = 2 - base_datetime.weekday()
+#             if days_ahead <= 0:
+#                 days_ahead += 7
+#             target_date = base_datetime + timedelta(days=days_ahead)
+#         elif 'thursday' in time_ref_lower:
+#             days_ahead = 3 - base_datetime.weekday()
+#             if days_ahead <= 0:
+#                 days_ahead += 7
+#             target_date = base_datetime + timedelta(days=days_ahead)
+#         elif 'friday' in time_ref_lower:
+#             days_ahead = 4 - base_datetime.weekday()
+#             if days_ahead <= 0:
+#                 days_ahead += 7
+#             target_date = base_datetime + timedelta(days=days_ahead)
+#         else:
+#             target_date = base_datetime
         
-        # Extract time if present
-        hour = 8  # Default to 8 AM
-        minute = 0
+#         # Extract time if present
+#         hour = 8  # Default to 8 AM
+#         minute = 0
         
-        # Simple time extraction
-        if '10 am' in time_ref_lower or '10:00 am' in time_ref_lower:
-            hour, minute = 10, 0
-        elif '11 am' in time_ref_lower or '11:00 am' in time_ref_lower:
-            hour, minute = 11, 0
-        elif '12 pm' in time_ref_lower or '12:00 pm' in time_ref_lower or 'noon' in time_ref_lower:
-            hour, minute = 12, 0
-        elif '1 pm' in time_ref_lower or '1:00 pm' in time_ref_lower or '13:00' in time_ref_lower:
-            hour, minute = 13, 0
-        elif '2 pm' in time_ref_lower or '2:00 pm' in time_ref_lower or '14:00' in time_ref_lower:
-            hour, minute = 14, 0
-        elif '3 pm' in time_ref_lower or '3:00 pm' in time_ref_lower or '15:00' in time_ref_lower:
-            hour, minute = 15, 0
-        elif '4 pm' in time_ref_lower or '4:00 pm' in time_ref_lower or '16:00' in time_ref_lower:
-            hour, minute = 16, 0
-        elif '5 pm' in time_ref_lower or '5:00 pm' in time_ref_lower or '17:00' in time_ref_lower:
-            hour, minute = 17, 0
-        elif '6 pm' in time_ref_lower or '6:00 pm' in time_ref_lower or '18:00' in time_ref_lower:
-            hour, minute = 18, 0
-        elif '9 am' in time_ref_lower or '9:00 am' in time_ref_lower:
-            hour, minute = 9, 0
-        elif '8 am' in time_ref_lower or '8:00 am' in time_ref_lower:
-            hour, minute = 8, 0
+#         # Simple time extraction
+#         if '10 am' in time_ref_lower or '10:00 am' in time_ref_lower:
+#             hour, minute = 10, 0
+#         elif '11 am' in time_ref_lower or '11:00 am' in time_ref_lower:
+#             hour, minute = 11, 0
+#         elif '12 pm' in time_ref_lower or '12:00 pm' in time_ref_lower or 'noon' in time_ref_lower:
+#             hour, minute = 12, 0
+#         elif '1 pm' in time_ref_lower or '1:00 pm' in time_ref_lower or '13:00' in time_ref_lower:
+#             hour, minute = 13, 0
+#         elif '2 pm' in time_ref_lower or '2:00 pm' in time_ref_lower or '14:00' in time_ref_lower:
+#             hour, minute = 14, 0
+#         elif '3 pm' in time_ref_lower or '3:00 pm' in time_ref_lower or '15:00' in time_ref_lower:
+#             hour, minute = 15, 0
+#         elif '4 pm' in time_ref_lower or '4:00 pm' in time_ref_lower or '16:00' in time_ref_lower:
+#             hour, minute = 16, 0
+#         elif '5 pm' in time_ref_lower or '5:00 pm' in time_ref_lower or '17:00' in time_ref_lower:
+#             hour, minute = 17, 0
+#         elif '6 pm' in time_ref_lower or '6:00 pm' in time_ref_lower or '18:00' in time_ref_lower:
+#             hour, minute = 18, 0
+#         elif '9 am' in time_ref_lower or '9:00 am' in time_ref_lower:
+#             hour, minute = 9, 0
+#         elif '8 am' in time_ref_lower or '8:00 am' in time_ref_lower:
+#             hour, minute = 8, 0
         
-        start_time = target_date.replace(hour=hour, minute=minute, second=0, microsecond=0)
-        end_time = start_time + timedelta(minutes=30)
+#         start_time = target_date.replace(hour=hour, minute=minute, second=0, microsecond=0)
+#         end_time = start_time + timedelta(minutes=30)
         
-        logger.info(f"Fallback parsed '{time_ref}' to: {start_time.isoformat()} - {end_time.isoformat()}")
-        return start_time, end_time
+#         logger.info(f"Fallback parsed '{time_ref}' to: {start_time.isoformat()} - {end_time.isoformat()}")
+#         return start_time, end_time
         
-    except Exception as e:
-        logger.error(f"Fallback time parsing failed: {e}")
-        # Ultimate fallback
-        fallback_start = base_datetime.replace(hour=8, minute=0, second=0, microsecond=0)
-        fallback_end = fallback_start + timedelta(minutes=30)
-        return fallback_start, fallback_end
+#     except Exception as e:
+#         logger.error(f"Fallback time parsing failed: {e}")
+#         # Ultimate fallback
+#         fallback_start = base_datetime.replace(hour=8, minute=0, second=0, microsecond=0)
+#         fallback_end = fallback_start + timedelta(minutes=30)
+#         return fallback_start, fallback_end
 
-async def parse_relative_time_reference(time_ref: str, user_timezone: str = "UTC", base_datetime: datetime = None) -> tuple:
-    """Parse relative time references like 'tomorrow', 'next week', etc. into datetime ranges.
+# async def parse_relative_time_reference(time_ref: str, user_timezone: str = "UTC", base_datetime: datetime = None) -> tuple:
+#     """Parse relative time references like 'tomorrow', 'next week', etc. into datetime ranges.
     
-    This function now uses LLM-based parsing for robust natural language understanding.
-    For backward compatibility, this is an async function that delegates to parse_time_with_llm.
-    """
-    try:
-        return await parse_time_with_llm(time_ref, user_timezone, base_datetime)
-    except Exception as e:
-        logger.error(f"Error in parse_relative_time_reference for '{time_ref}': {e}")
-        # Fallback to the old function for maximum compatibility
-        return _fallback_time_parsing(time_ref, user_timezone, base_datetime)
+#     This function now uses LLM-based parsing for robust natural language understanding.
+#     For backward compatibility, this is an async function that delegates to parse_time_with_llm.
+#     """
+#     try:
+#         return await parse_time_with_llm(time_ref, user_timezone, base_datetime)
+#     except Exception as e:
+#         logger.error(f"Error in parse_relative_time_reference for '{time_ref}': {e}")
+#         # Fallback to the old function for maximum compatibility
+#         return _fallback_time_parsing(time_ref, user_timezone, base_datetime)
 
-async def parse_specific_time_from_query(query: str, temporal_reference: str, user_timezone: str, base_datetime: datetime) -> tuple:
-    """Parse specific time from query when in specific_slot_inquiry mode.
+# async def parse_specific_time_from_query(query: str, temporal_reference: str, user_timezone: str, base_datetime: datetime) -> tuple:
+#     """Parse specific time from query when in specific_slot_inquiry mode.
     
-    This function now uses LLM-based parsing for robust natural language understanding.
-    It combines the temporal reference with the specific time query for intelligent parsing.
-    """
-    try:
-        # Combine the temporal reference with the specific time query
-        combined_time_ref = f"{temporal_reference} at {query}"
+#     This function now uses LLM-based parsing for robust natural language understanding.
+#     It combines the temporal reference with the specific time query for intelligent parsing.
+#     """
+#     try:
+#         # Combine the temporal reference with the specific time query
+#         combined_time_ref = f"{temporal_reference} at {query}"
         
-        # Use the new LLM-based time parsing function
-        return await parse_time_with_llm(combined_time_ref, user_timezone, base_datetime)
+#         # Use the new LLM-based time parsing function
+#         return await parse_time_with_llm(combined_time_ref, user_timezone, base_datetime)
         
-    except Exception as e:
-        logger.error(f"Error parsing specific time from query '{query}': {e}")
-        # Fallback to the temporal reference only
-        return await parse_relative_time_reference(temporal_reference, user_timezone, base_datetime)
+#     except Exception as e:
+#         logger.error(f"Error parsing specific time from query '{query}': {e}")
+#         # Fallback to the temporal reference only
+#         return await parse_relative_time_reference(temporal_reference, user_timezone, base_datetime)
 
 def find_available_slots(busy_times: List[Dict], start_datetime: datetime, end_datetime: datetime, slot_duration_minutes: int = 30) -> List[Dict[str, str]]:
     """Find available time slots within a time range, avoiding busy periods."""
@@ -606,41 +606,84 @@ async def check_availability_tool(query: str, duration_minutes: int = 30) -> str
             # Get current datetime in user's timezone
             current_datetime = datetime.now(pytz.timezone(user_timezone))
             
-            # Parse the query to determine time range
-            start_datetime, end_datetime = await parse_time_with_llm(query, user_timezone, current_datetime)
+            # Get LLM instance for direct time parsing
+            llm = get_llm_instance()
+            if not llm:
+                logger.warning("LLM instance not available for time parsing")
+                return "I'm having trouble understanding the time reference. Could you please provide a more specific date and time?"
             
-            # Check if the requested time is in the past
-            if start_datetime < current_datetime:
-                logger.warning(f"Attempted to check availability for past time: {start_datetime}")
-                return f"❌ Cannot check availability for past time. The requested time ({start_datetime.strftime('%Y-%m-%d %H:%M %Z')}) has already passed."
+            # Create a prompt for time parsing
+            time_parsing_prompt = f"""You are a time parsing expert. Convert the given time reference to exact start and end times.
+
+Current time: {current_datetime.strftime('%Y-%m-%d %H:%M:%S %Z')}
+Timezone: {user_timezone}
+Time reference: "{query}"
+Duration: {duration_minutes} minutes
+
+Rules:
+1. Convert relative references like "tomorrow", "next week", "monday" to actual dates
+2. For specific times like "10 AM", "2:30 PM", use the exact time
+3. For time periods like "morning", "afternoon", use reasonable defaults (9 AM-12 PM for morning, 2 PM-5 PM for afternoon)
+4. For single time points, create a slot of the specified duration
+5. For date-only references, use 8 AM-6 PM as default business hours
+6. Always return times in the specified timezone
+
+Return ONLY a JSON object with this exact format:
+{{
+    "start_time": "YYYY-MM-DDTHH:MM:SS+HH:MM",
+    "end_time": "YYYY-MM-DDTHH:MM:SS+HH:MM",
+    "explanation": "Brief explanation of the conversion"
+}}"""
+
+            # Use the LLM to parse the time
+            response = await llm.ainvoke([HumanMessage(content=time_parsing_prompt)])
+            response_text = response.content.strip()
             
-            service = get_calendar_service()
-            availability = service.check_availability(start_datetime.isoformat(), end_datetime.isoformat(), calendar_ids)
-            
-            if availability['is_free']:
-                return f"✅ Time slot {start_datetime.strftime('%Y-%m-%d %H:%M')} to {end_datetime.strftime('%H:%M %Z')} is FREE across all configured calendars"
+            # Extract JSON from the response
+            json_start = response_text.find('{')
+            json_end = response_text.rfind('}') + 1
+            if json_start != -1 and json_end > json_start:
+                json_str = response_text[json_start:json_end]
+                parsed = json.loads(json_str)
+                
+                # Convert string times to datetime objects
+                start_datetime = datetime.fromisoformat(parsed['start_time'].replace('Z', '+00:00'))
+                end_datetime = datetime.fromisoformat(parsed['end_time'].replace('Z', '+00:00'))
+                
+                # Check if the requested time is in the past
+                if start_datetime < current_datetime:
+                    logger.warning(f"Attempted to check availability for past time: {start_datetime}")
+                    return f"❌ Cannot check availability for past time. The requested time ({start_datetime.strftime('%Y-%m-%d %H:%M %Z')}) has already passed."
+                
+                service = get_calendar_service()
+                availability = service.check_availability(start_datetime.isoformat(), end_datetime.isoformat(), calendar_ids)
+                
+                if availability['is_free']:
+                    return f"✅ Time slot {start_datetime.strftime('%Y-%m-%d %H:%M')} to {end_datetime.strftime('%H:%M %Z')} is FREE across all configured calendars"
+                else:
+                    result = f"❌ Time slot {start_datetime.strftime('%Y-%m-%d %H:%M')} to {end_datetime.strftime('%H:%M %Z')} has CONFLICTS:\n"
+                    for conflict in availability['conflicts']:
+                        conflict_start = datetime.fromisoformat(conflict['start'].replace('Z', '+00:00'))
+                        conflict_end = datetime.fromisoformat(conflict['end'].replace('Z', '+00:00'))
+                        result += f"- Busy from {conflict_start.strftime('%H:%M')} to {conflict_end.strftime('%H:%M')}\n"
+                    return result
             else:
-                result = f"❌ Time slot {start_datetime.strftime('%Y-%m-%d %H:%M')} to {end_datetime.strftime('%H:%M %Z')} has CONFLICTS:\n"
-                for conflict in availability['conflicts']:
-                    conflict_start = datetime.fromisoformat(conflict['start'].replace('Z', '+00:00'))
-                    conflict_end = datetime.fromisoformat(conflict['end'].replace('Z', '+00:00'))
-                    result += f"- Busy from {conflict_start.strftime('%H:%M')} to {conflict_end.strftime('%H:%M')}\n"
-                return result
+                logger.warning(f"Could not extract JSON from LLM response: {response_text}")
+                return "I'm having trouble understanding the time reference. Could you please provide a more specific date and time?"
                 
         except ValueError as e:
             if "User ID not set" in str(e) or "Calendar service not initialized" in str(e):
                 # Demo mode for LangGraph Studio
                 logger.info("Running in demo mode - no user context available")
                 
-                # Parse the query to determine time range (using UTC)
+                # Use UTC for demo mode
                 current_datetime = datetime.now(pytz.UTC)
-                start_datetime, end_datetime = await parse_time_with_llm(query, "UTC", current_datetime)
                 
                 # Demo response - simulate availability check
                 if "tomorrow" in query.lower() or "next" in query.lower():
-                    return f"✅ Demo mode: Time slot {start_datetime.strftime('%Y-%m-%d %H:%M')} to {end_datetime.strftime('%H:%M %Z')} appears to be FREE\n\nNote: This is a demo response. In production, this would check your actual Google Calendar."
+                    return f"✅ Demo mode: The requested time appears to be FREE\n\nNote: This is a demo response. In production, this would check your actual Google Calendar."
                 else:
-                    return f"❌ Demo mode: Time slot {start_datetime.strftime('%Y-%m-%d %H:%M')} to {end_datetime.strftime('%H:%M %Z')} has CONFLICTS\n\nNote: This is a demo response. In production, this would check your actual Google Calendar."
+                    return f"❌ Demo mode: The requested time has CONFLICTS\n\nNote: This is a demo response. In production, this would check your actual Google Calendar."
             else:
                 raise
             
@@ -649,7 +692,7 @@ async def check_availability_tool(query: str, duration_minutes: int = 30) -> str
         return f"I had trouble checking availability. Please try again or provide more specific time details."
 
 @tool
-def create_event_tool(title: str, start_datetime: str, end_datetime: str, 
+def create_event_tool(title: str, time_reference: str, duration_minutes: int = 30,
                      attendee_emails: List[str] = None, description: str = "", 
                      location: str = "") -> str:
     """Create a new calendar event on the user's primary calendar.
@@ -658,8 +701,8 @@ def create_event_tool(title: str, start_datetime: str, end_datetime: str,
     
     Args:
         title: Meeting title (required)
-        start_datetime: Start time in ISO format with timezone (required)
-        end_datetime: End time in ISO format with timezone (required)
+        time_reference: Natural language time reference (e.g., "tomorrow at 2 PM", "next monday at 10 AM")
+        duration_minutes: Duration in minutes (default: 30)
         attendee_emails: List of attendee email addresses (optional)
         description: Meeting description (optional)
         location: Meeting location (optional)
@@ -814,7 +857,7 @@ def get_events_tool(start_datetime: str, end_datetime: str) -> str:
         return f"I had trouble retrieving calendar events. Please try again."
 
 @tool
-def get_current_time_tool(timezone: str = None) -> str:
+async def get_current_time_tool(timezone: str = None) -> str:
     """Get current date and time in user's timezone or specified timezone.
     
     This tool provides current time information for timezone-aware operations.
@@ -846,30 +889,6 @@ def get_current_time_tool(timezone: str = None) -> str:
     except Exception as e:
         logger.error(f"Error in get_current_time_tool: {e}")
         return f"I had trouble getting the current time for timezone {timezone}."
-
-@tool
-async def convert_relative_time_tool(time_reference: str, timezone: str = "UTC") -> str:
-    """Convert relative time references like 'tomorrow at 10 AM' to ISO datetime format.
-    
-    This tool helps convert natural language time references to proper ISO datetime format
-    for use with other calendar tools. Uses intelligent LLM-based parsing for robust understanding.
-    
-    Args:
-        time_reference: Natural language time reference (e.g., 'tomorrow at 10 AM', 'next Monday at 2 PM')
-        timezone: Timezone to use for conversion (default: UTC)
-    """
-    try:
-        tz = pytz.timezone(timezone)
-        current_time = datetime.now(tz)
-        
-        # Use the new LLM-based time parsing function
-        start_time, end_time = await parse_time_with_llm(time_reference, timezone, current_time)
-        
-        return f"'{time_reference}' converts to: {start_time.isoformat()} to {end_time.isoformat()}"
-        
-    except Exception as e:
-        logger.error(f"Error in convert_relative_time_tool with input '{time_reference}': {e}")
-        return f"I had trouble converting the time reference '{time_reference}'. Please provide a more specific date and time."
 
 @tool
 def list_calendars_tool() -> str:
@@ -1160,51 +1179,93 @@ async def get_available_slots_for_period_tool(time_period: str, duration_minutes
             # Get current datetime in user's timezone
             current_datetime = datetime.now(pytz.timezone(user_timezone))
             
-            # Parse the time period to get start and end times
-            start_datetime, end_datetime = await parse_time_with_llm(time_period, user_timezone, current_datetime)
+            # Get LLM instance for direct time parsing
+            llm = get_llm_instance()
+            if not llm:
+                logger.warning("LLM instance not available for time parsing")
+                return "I'm having trouble understanding the time period. Could you please provide a more specific time range?"
             
-            # Check if the requested time is in the past
-            if start_datetime < current_datetime:
-                return f"❌ Cannot check availability for past time. The requested time ({start_datetime.strftime('%Y-%m-%d %H:%M %Z')}) has already passed."
+            # Create a prompt for time parsing
+            time_parsing_prompt = f"""You are a time parsing expert. Convert the given time period to exact start and end times.
+
+Current time: {current_datetime.strftime('%Y-%m-%d %H:%M:%S %Z')}
+Timezone: {user_timezone}
+Time period: "{time_period}"
+
+Rules:
+1. Convert relative references like "tomorrow", "next week", "monday" to actual dates
+2. For specific days, use business hours (8 AM - 6 PM)
+3. For "next week", use the entire work week (Monday-Friday, 8 AM - 6 PM)
+4. For "tomorrow", use full day (8 AM - 6 PM)
+5. For specific times like "tomorrow afternoon", use appropriate ranges (2 PM - 5 PM)
+6. Always return times in the specified timezone
+
+Return ONLY a JSON object with this exact format:
+{{
+    "start_time": "YYYY-MM-DDTHH:MM:SS+HH:MM",
+    "end_time": "YYYY-MM-DDTHH:MM:SS+HH:MM",
+    "explanation": "Brief explanation of the conversion"
+}}"""
+
+            # Use the LLM to parse the time
+            response = await llm.ainvoke([HumanMessage(content=time_parsing_prompt)])
+            response_text = response.content.strip()
             
-            # Get busy times from Google Calendar
-            service = get_calendar_service()
-            availability = service.check_availability(start_datetime.isoformat(), end_datetime.isoformat(), calendar_ids)
-            busy_times = availability.get('conflicts', [])
-            
-            logger.info(f"Retrieved {len(busy_times)} busy periods from Google Calendar for {time_period}")
-            
-            # Find available slots
-            available_slots = find_available_slots(busy_times, start_datetime, end_datetime, duration_minutes)
-            
-            if not available_slots:
-                return f"❌ No {duration_minutes}-minute slots available for {time_period}"
-            
-            result = f"✅ Available {duration_minutes}-minute slots for {time_period}:\n"
-            for i, slot in enumerate(available_slots[:10], 1):  # Limit to 10 slots for readability
-                slot_start = datetime.fromisoformat(slot['start'])
-                slot_end = datetime.fromisoformat(slot['end'])
-                result += f"{i}. {slot_start.strftime('%Y-%m-%d %H:%M')} - {slot_end.strftime('%H:%M %Z')}\n"
-            
-            if len(available_slots) > 10:
-                result += f"... and {len(available_slots) - 10} more slots available\n"
-            
-            return result
+            # Extract JSON from the response
+            json_start = response_text.find('{')
+            json_end = response_text.rfind('}') + 1
+            if json_start != -1 and json_end > json_start:
+                json_str = response_text[json_start:json_end]
+                parsed = json.loads(json_str)
+                
+                # Convert string times to datetime objects
+                start_datetime = datetime.fromisoformat(parsed['start_time'].replace('Z', '+00:00'))
+                end_datetime = datetime.fromisoformat(parsed['end_time'].replace('Z', '+00:00'))
+                
+                # Check if the requested time is in the past
+                if start_datetime < current_datetime:
+                    return f"❌ Cannot check availability for past time. The requested time ({start_datetime.strftime('%Y-%m-%d %H:%M %Z')}) has already passed."
+                
+                # Get busy times from Google Calendar
+                service = get_calendar_service()
+                availability = service.check_availability(start_datetime.isoformat(), end_datetime.isoformat(), calendar_ids)
+                busy_times = availability.get('conflicts', [])
+                
+                logger.info(f"Retrieved {len(busy_times)} busy periods from Google Calendar for {time_period}")
+                
+                # Find available slots
+                available_slots = find_available_slots(busy_times, start_datetime, end_datetime, duration_minutes)
+                
+                if not available_slots:
+                    return f"❌ No {duration_minutes}-minute slots available for {time_period}"
+                
+                result = f"✅ Available {duration_minutes}-minute slots for {time_period}:\n"
+                for i, slot in enumerate(available_slots[:10], 1):  # Limit to 10 slots for readability
+                    slot_start = datetime.fromisoformat(slot['start'])
+                    slot_end = datetime.fromisoformat(slot['end'])
+                    result += f"{i}. {slot_start.strftime('%Y-%m-%d %H:%M')} - {slot_end.strftime('%H:%M %Z')}\n"
+                
+                if len(available_slots) > 10:
+                    result += f"... and {len(available_slots) - 10} more slots available\n"
+                
+                return result
+            else:
+                logger.warning(f"Could not extract JSON from LLM response: {response_text}")
+                return "I'm having trouble understanding the time period. Could you please provide a more specific time range?"
             
         except ValueError as e:
             if "User ID not set" in str(e) or "Calendar service not initialized" in str(e):
                 # Demo mode for LangGraph Studio
                 logger.info("Running in demo mode - no user context available")
                 
-                # Parse the time period (using UTC)
+                # Use UTC for demo mode
                 current_datetime = datetime.now(pytz.UTC)
-                start_datetime, end_datetime = await parse_time_with_llm(time_period, "UTC", current_datetime)
                 
                 # Demo response with sample available slots
                 result = f"✅ Demo mode: Available {duration_minutes}-minute slots for {time_period}:\n"
-                result += f"1. {start_datetime.strftime('%Y-%m-%d %H:%M')} - {(start_datetime + timedelta(minutes=duration_minutes)).strftime('%H:%M %Z')}\n"
-                result += f"2. {(start_datetime + timedelta(minutes=60)).strftime('%Y-%m-%d %H:%M')} - {(start_datetime + timedelta(minutes=60+duration_minutes)).strftime('%H:%M %Z')}\n"
-                result += f"3. {(start_datetime + timedelta(minutes=120)).strftime('%Y-%m-%d %H:%M')} - {(start_datetime + timedelta(minutes=120+duration_minutes)).strftime('%H:%M %Z')}\n"
+                result += f"1. {current_datetime.strftime('%Y-%m-%d')} 09:00 - 09:30 UTC\n"
+                result += f"2. {current_datetime.strftime('%Y-%m-%d')} 10:00 - 10:30 UTC\n"
+                result += f"3. {current_datetime.strftime('%Y-%m-%d')} 14:00 - 14:30 UTC\n"
                 result += f"\nNote: This is a demo response. In production, this would check your actual Google Calendar."
                 
                 return result
@@ -1215,37 +1276,12 @@ async def get_available_slots_for_period_tool(time_period: str, duration_minutes
         logger.error(f"Error in get_available_slots_for_period_tool: {e}")
         return f"I had trouble finding available slots for {time_period}. Please try again or provide a more specific time period."
 
-@tool
-async def parse_specific_time_tool(query: str, temporal_reference: str, timezone: str = "UTC") -> str:
-    """Parse specific time from a query when you have a temporal reference.
-    
-    This tool helps extract specific times from natural language queries when you know the general time period.
-    Useful for converting "2 PM tomorrow" into exact datetime when you know "tomorrow" refers to a specific date.
-    Uses intelligent LLM-based parsing for robust understanding.
-    
-    Args:
-        query: The query containing specific time information (e.g., "2 PM", "10:30 AM")
-        temporal_reference: The general time reference (e.g., "tomorrow", "monday", "next week")
-        timezone: Timezone to use for conversion (default: UTC)
-    """
-    try:
-        tz = pytz.timezone(timezone)
-        current_time = datetime.now(tz)
-        
-        # Combine the temporal reference with the specific time query
-        combined_time_ref = f"{temporal_reference} at {query}"
-        
-        # Use the new LLM-based time parsing function
-        start_time, end_time = await parse_time_with_llm(combined_time_ref, timezone, current_time)
-        
-        return f"Parsed '{query}' with reference '{temporal_reference}' to: {start_time.isoformat()} to {end_time.isoformat()}"
-        
-    except Exception as e:
-        logger.error(f"Error in parse_specific_time_tool with input '{query}': {e}")
-        return f"I had trouble parsing the specific time from '{query}'. Please provide a more specific time reference."
+
 
 # Bundle tools
-tools = [check_availability_tool, create_event_tool, get_events_tool, get_current_time_tool, convert_relative_time_tool, list_calendars_tool, modify_event_tool, delete_event_tool, find_available_slots_tool, get_available_slots_for_period_tool, parse_specific_time_tool]
+tools = [check_availability_tool, create_event_tool, get_events_tool, get_current_time_tool, 
+         list_calendars_tool, modify_event_tool, delete_event_tool, find_available_slots_tool, 
+         get_available_slots_for_period_tool]  # Removed convert_relative_time_tool and parse_specific_time_tool
 
 class SimpleAthenaAgent:
     """Simplified Athena agent with cleaner architecture."""
@@ -1363,28 +1399,48 @@ Your primary role is to coordinate with the user's colleagues (found in the cont
 
 DEMO MODE NOTE: When running in LangGraph Studio or other demo environments, calendar tools will provide demo responses instead of connecting to actual Google Calendar. This is normal and expected for testing purposes.
 
-Your role is to help users manage their calendar and schedule meetings efficiently. You have access to powerful calendar tools:
-- check_availability_tool: Check availability using natural language queries (e.g., "tomorrow at 2 PM", "next week")
-- create_event_tool: Create calendar events and meetings with full Google Calendar integration
-- get_events_tool: Retrieve existing calendar events from all configured calendars
-- get_current_time_tool: Get current time and timezone information (automatically uses user's timezone)
-- convert_relative_time_tool: Convert relative time references (like "tomorrow at 10 AM") to proper ISO datetime format
-- list_calendars_tool: List all calendars available to the user (useful for troubleshooting)
-- modify_event_tool: Modify existing calendar events (title, time, attendees, description, location)
+TIME PARSING CAPABILITIES:
+You are capable of understanding and converting time references directly. When you see time references:
+1. ALWAYS convert them to ISO format (YYYY-MM-DDTHH:MM:SS+HH:MM)
+2. Use the user's timezone (provided in the conversation) or UTC if not specified
+3. Handle relative references like:
+   - "tomorrow at 10 AM" → Calculate exact date and time
+   - "next monday" → Find the date of next Monday
+   - "in 2 hours" → Add hours to current time
+   - "afternoon" → Use 2 PM as default time
+   - "morning" → Use 9 AM as default time
+4. For duration references:
+   - "about an hour" = 60 minutes
+   - "half hour" = 30 minutes
+   - "an hour and a half" = 90 minutes
+5. For date-only references, use business hours (8 AM - 6 PM)
+6. For time-only references, use today's date
+7. ALWAYS validate that dates are not in the past
+
+Example time parsing:
+- "tomorrow at 10 AM" → "2024-01-16T10:00:00+00:00"
+- "next monday afternoon" → "2024-01-22T14:00:00+00:00"
+- "in 2 hours" → (current time + 2 hours in ISO format)
+
+Your role is to help users manage their calendar and schedule meetings efficiently. You have access to these calendar tools:
+- check_availability_tool: Check availability for a specific time (provide ISO format)
+- create_event_tool: Create calendar events (requires ISO format times)
+- get_events_tool: Retrieve existing calendar events
+- get_current_time_tool: Get current time and timezone information
+- list_calendars_tool: List all calendars available to the user
+- modify_event_tool: Modify existing calendar events
 - delete_event_tool: Delete calendar events permanently
-- find_available_slots_tool: Find multiple available time slots within a time range (can auto-retrieve from Google Calendar)
-- get_available_slots_for_period_tool: Complete data retrieval - get available slots for any time period by checking Google Calendar directly
-- parse_specific_time_tool: Parse specific times from queries when you know the general time period
+- find_available_slots_tool: Find multiple available time slots
+- get_available_slots_for_period_tool: Get available slots by checking calendar
 
 ## Data Retrieval Tools for Availability:
 - **get_available_slots_for_period_tool**: The most powerful tool for availability checking. It automatically:
   - Retrieves busy times from Google Calendar
   - Finds available slots in the specified time period
-  - Handles natural language time references (e.g., "tomorrow", "next week", "monday")
   - Returns formatted available time slots
-  - Use this for queries like "What slots are available tomorrow?" or "Show me free times next week"
+  - Use this for queries like "What slots are available tomorrow?"
 
-- **find_available_slots_tool**: Enhanced version that can auto-retrieve from Google Calendar if no busy times provided
+- **find_available_slots_tool**: Enhanced version that can auto-retrieve from Google Calendar
   - Can work with pre-provided busy times OR retrieve from Google Calendar automatically
   - Useful for finding slots within specific datetime ranges
 
@@ -1430,13 +1486,12 @@ Assistant: "Shall I create this meeting for you?"
 User: "ok go ahead"
 Assistant: "Great! I'll create that meeting for you now." [Then immediately use create_event_tool with all the details from conversation history]
 
-Assistant: "Should I proceed with booking this time slot?"
+A: "Should I proceed with booking this time slot?"
 User: "Yes"
 Assistant: "Perfect! I'll book that time slot for you." [Then immediately proceed with the action]
 
 INTELLIGENT TIME PROCESSING:
 - ALWAYS extract temporal information from conversation history (yesterday, today, tomorrow, specific dates/times)
-- Convert relative time references to proper ISO datetime format using convert_relative_time_tool if needed
 - When you see "tomorrow at 10 AM", calculate the actual date and convert to ISO format
 - "About an hour" = 60 minutes duration
 - "Just me" = no attendees needed
@@ -1452,14 +1507,14 @@ CRITICAL: If you have sufficient information from conversation history, PROCEED 
 EXAMPLES of intelligent processing:
 User: "Schedule a meeting tomorrow at 10 AM for catching up, about an hour, just me"
 Assistant: 
-1. Use convert_relative_time_tool("tomorrow at 10 AM") to get ISO start time
+1. Calculate "tomorrow at 10 AM" → exact ISO datetime
 2. Calculate end time (start + 60 minutes) 
 3. Extract: title="catch-up meeting", no attendees needed
 4. IMMEDIATELY use create_event_tool with the ISO datetime values
 
 User provides clarification: "Meeting is catching up, about an hour, just me" 
 Assistant: Review conversation history, see "tomorrow at 10 AM" was mentioned before
-1. Use convert_relative_time_tool("tomorrow at 10 AM") 
+1. Calculate "tomorrow at 10 AM" → exact ISO datetime
 2. Extract all info: title="catching up", duration=60 mins, no attendees
 3. PROCEED with create_event_tool instead of asking for confirmation
 

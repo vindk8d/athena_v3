@@ -1024,7 +1024,7 @@ def delete_event_tool(event_id: str, calendar_id: str = None) -> str:
         return f"I had trouble deleting the event. Please check the event ID and try again."
 
 @tool
-def find_available_slots_tool(start_datetime: str, end_datetime: str, duration_minutes: int = 30, busy_times: List[Dict] = None) -> str:
+async def find_available_slots_tool(start_datetime: str, end_datetime: str, duration_minutes: int = 30, busy_times: List[Dict] = None) -> str:
     """Find available time slots within a time range, avoiding busy periods.
     
     This tool helps find multiple available time slots when you have a list of busy times.
@@ -1041,10 +1041,33 @@ def find_available_slots_tool(start_datetime: str, end_datetime: str, duration_m
         start_dt = datetime.fromisoformat(start_datetime.replace('Z', '+00:00'))
         end_dt = datetime.fromisoformat(end_datetime.replace('Z', '+00:00'))
         
-        # Use empty list if no busy times provided
-        busy_times = busy_times or []
+        # If no busy times provided, try to get them from Google Calendar
+        if busy_times is None:
+            try:
+                user_id = get_current_user_id()
+                calendar_ids = get_included_calendars(user_id)
+                
+                if calendar_ids:
+                    service = get_calendar_service()
+                    availability = service.check_availability(start_datetime, end_datetime, calendar_ids)
+                    busy_times = availability.get('conflicts', [])
+                    logger.info(f"Retrieved {len(busy_times)} busy periods from Google Calendar")
+                else:
+                    logger.warning("No calendars configured for availability checking")
+                    busy_times = []
+            except ValueError as e:
+                if "User ID not set" in str(e) or "Calendar service not initialized" in str(e):
+                    # Demo mode for LangGraph Studio
+                    logger.info("Running in demo mode - using sample busy times")
+                    busy_times = [
+                        {"start": "2024-01-15T09:00:00Z", "end": "2024-01-15T10:00:00Z"},
+                        {"start": "2024-01-15T14:00:00Z", "end": "2024-01-15T15:00:00Z"}
+                    ]
+                else:
+                    logger.error(f"Error getting busy times from calendar: {e}")
+                    busy_times = []
         
-        # Call the helper function
+        # Use the helper function to find available slots
         available_slots = find_available_slots(busy_times, start_dt, end_dt, duration_minutes)
         
         if not available_slots:
@@ -1064,6 +1087,85 @@ def find_available_slots_tool(start_datetime: str, end_datetime: str, duration_m
     except Exception as e:
         logger.error(f"Error in find_available_slots_tool: {e}")
         return f"I had trouble finding available slots. Please check the datetime format and try again."
+
+@tool
+async def get_available_slots_for_period_tool(time_period: str, duration_minutes: int = 30) -> str:
+    """Get available time slots for a specific time period by checking Google Calendar.
+    
+    This tool automatically retrieves busy times from Google Calendar and finds available slots.
+    It's a complete data retrieval function that handles the entire process.
+    
+    Args:
+        time_period: Natural language time period (e.g., "tomorrow", "next week", "monday")
+        duration_minutes: Duration of each slot in minutes (default: 30)
+    """
+    try:
+        # Get user context
+        try:
+            user_id = get_current_user_id()
+            user_timezone = get_user_timezone(user_id)
+            calendar_ids = get_included_calendars(user_id)
+            
+            if not calendar_ids:
+                return "No calendars configured for availability checking. Please configure calendars in the web interface."
+            
+            # Get current datetime in user's timezone
+            current_datetime = datetime.now(pytz.timezone(user_timezone))
+            
+            # Parse the time period to get start and end times
+            start_datetime, end_datetime = parse_relative_time_reference(time_period, user_timezone, current_datetime)
+            
+            # Check if the requested time is in the past
+            if start_datetime < current_datetime:
+                return f"❌ Cannot check availability for past time. The requested time ({start_datetime.strftime('%Y-%m-%d %H:%M %Z')}) has already passed."
+            
+            # Get busy times from Google Calendar
+            service = get_calendar_service()
+            availability = service.check_availability(start_datetime.isoformat(), end_datetime.isoformat(), calendar_ids)
+            busy_times = availability.get('conflicts', [])
+            
+            logger.info(f"Retrieved {len(busy_times)} busy periods from Google Calendar for {time_period}")
+            
+            # Find available slots
+            available_slots = find_available_slots(busy_times, start_datetime, end_datetime, duration_minutes)
+            
+            if not available_slots:
+                return f"❌ No {duration_minutes}-minute slots available for {time_period}"
+            
+            result = f"✅ Available {duration_minutes}-minute slots for {time_period}:\n"
+            for i, slot in enumerate(available_slots[:10], 1):  # Limit to 10 slots for readability
+                slot_start = datetime.fromisoformat(slot['start'])
+                slot_end = datetime.fromisoformat(slot['end'])
+                result += f"{i}. {slot_start.strftime('%Y-%m-%d %H:%M')} - {slot_end.strftime('%H:%M %Z')}\n"
+            
+            if len(available_slots) > 10:
+                result += f"... and {len(available_slots) - 10} more slots available\n"
+            
+            return result
+            
+        except ValueError as e:
+            if "User ID not set" in str(e) or "Calendar service not initialized" in str(e):
+                # Demo mode for LangGraph Studio
+                logger.info("Running in demo mode - no user context available")
+                
+                # Parse the time period (using UTC)
+                current_datetime = datetime.now(pytz.UTC)
+                start_datetime, end_datetime = parse_relative_time_reference(time_period, "UTC", current_datetime)
+                
+                # Demo response with sample available slots
+                result = f"✅ Demo mode: Available {duration_minutes}-minute slots for {time_period}:\n"
+                result += f"1. {start_datetime.strftime('%Y-%m-%d %H:%M')} - {(start_datetime + timedelta(minutes=duration_minutes)).strftime('%H:%M %Z')}\n"
+                result += f"2. {(start_datetime + timedelta(minutes=60)).strftime('%Y-%m-%d %H:%M')} - {(start_datetime + timedelta(minutes=60+duration_minutes)).strftime('%H:%M %Z')}\n"
+                result += f"3. {(start_datetime + timedelta(minutes=120)).strftime('%Y-%m-%d %H:%M')} - {(start_datetime + timedelta(minutes=120+duration_minutes)).strftime('%H:%M %Z')}\n"
+                result += f"\nNote: This is a demo response. In production, this would check your actual Google Calendar."
+                
+                return result
+            else:
+                raise
+        
+    except Exception as e:
+        logger.error(f"Error in get_available_slots_for_period_tool: {e}")
+        return f"I had trouble finding available slots for {time_period}. Please try again or provide a more specific time period."
 
 @tool
 def parse_specific_time_tool(query: str, temporal_reference: str, timezone: str = "UTC") -> str:
@@ -1091,7 +1193,7 @@ def parse_specific_time_tool(query: str, temporal_reference: str, timezone: str 
         return f"I had trouble parsing the specific time from '{query}'. Please provide a more specific time reference."
 
 # Bundle tools
-tools = [check_availability_tool, create_event_tool, get_events_tool, get_current_time_tool, convert_relative_time_tool, list_calendars_tool, modify_event_tool, delete_event_tool, find_available_slots_tool, parse_specific_time_tool]
+tools = [check_availability_tool, create_event_tool, get_events_tool, get_current_time_tool, convert_relative_time_tool, list_calendars_tool, modify_event_tool, delete_event_tool, find_available_slots_tool, get_available_slots_for_period_tool, parse_specific_time_tool]
 
 class SimpleAthenaAgent:
     """Simplified Athena agent with cleaner architecture."""
@@ -1213,13 +1315,26 @@ Your role is to help users manage their calendar and schedule meetings efficient
 - check_availability_tool: Check availability using natural language queries (e.g., "tomorrow at 2 PM", "next week")
 - create_event_tool: Create calendar events and meetings with full Google Calendar integration
 - get_events_tool: Retrieve existing calendar events from all configured calendars
-- get_current_time_tool: Get current time and timezone information
+- get_current_time_tool: Get current time and timezone information (automatically uses user's timezone)
 - convert_relative_time_tool: Convert relative time references (like "tomorrow at 10 AM") to proper ISO datetime format
 - list_calendars_tool: List all calendars available to the user (useful for troubleshooting)
 - modify_event_tool: Modify existing calendar events (title, time, attendees, description, location)
 - delete_event_tool: Delete calendar events permanently
-- find_available_slots_tool: Find multiple available time slots within a time range when you have busy times
+- find_available_slots_tool: Find multiple available time slots within a time range (can auto-retrieve from Google Calendar)
+- get_available_slots_for_period_tool: Complete data retrieval - get available slots for any time period by checking Google Calendar directly
 - parse_specific_time_tool: Parse specific times from queries when you know the general time period
+
+## Data Retrieval Tools for Availability:
+- **get_available_slots_for_period_tool**: The most powerful tool for availability checking. It automatically:
+  - Retrieves busy times from Google Calendar
+  - Finds available slots in the specified time period
+  - Handles natural language time references (e.g., "tomorrow", "next week", "monday")
+  - Returns formatted available time slots
+  - Use this for queries like "What slots are available tomorrow?" or "Show me free times next week"
+
+- **find_available_slots_tool**: Enhanced version that can auto-retrieve from Google Calendar if no busy times provided
+  - Can work with pre-provided busy times OR retrieve from Google Calendar automatically
+  - Useful for finding slots within specific datetime ranges
 
 ## Colleague Coordination Process:
 1. **Identify the Request**: When a colleague wants to meet with your user

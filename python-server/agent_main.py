@@ -766,15 +766,32 @@ def get_events_tool(start_datetime: str, end_datetime: str) -> str:
         return f"I had trouble retrieving calendar events. Please try again."
 
 @tool
-def get_current_time_tool(timezone: str = "UTC") -> str:
-    """Get current date and time in specified timezone.
+def get_current_time_tool(timezone: str = None) -> str:
+    """Get current date and time in user's timezone or specified timezone.
     
     This tool provides current time information for timezone-aware operations.
+    If no timezone is specified, it will automatically use the user's default timezone
+    from their calendar configuration.
     
     Args:
-        timezone: Timezone (e.g., 'UTC', 'US/Pacific', 'Europe/London')
+        timezone: Timezone (e.g., 'UTC', 'US/Pacific', 'Europe/London'). If None, uses user's default timezone.
     """
     try:
+        # Try to get user's timezone if not specified
+        if timezone is None:
+            try:
+                user_id = get_current_user_id()
+                timezone = get_user_timezone(user_id)
+                logger.info(f"Using user's default timezone: {timezone}")
+            except ValueError as e:
+                if "User ID not set" in str(e) or "Calendar service not initialized" in str(e):
+                    # Demo mode for LangGraph Studio
+                    logger.info("Running in demo mode - using UTC as default timezone")
+                    timezone = "UTC"
+                else:
+                    logger.error(f"Error getting user timezone: {e}")
+                    timezone = "UTC"
+        
         tz = pytz.timezone(timezone)
         current_time = datetime.now(tz)
         return f"Current time in {timezone}: {current_time.strftime('%Y-%m-%d %H:%M:%S %Z')}"
@@ -1110,12 +1127,16 @@ Your task is to carefully analyze user messages and classify them into one of th
 
 1. general_conversation - Greetings, casual chat, off-topic discussions
 
-2. clarification_answer - User is providing additional details or answering a clarifying question that the assistant asked
+2. clarification_answer - User is providing additional details, confirming information, or answering a clarifying question that the assistant asked
    • Look for messages that are clearly responding to a previous question from the assistant
-   • Common patterns: providing missing details, specifying times/dates, confirming information
-   • Examples: "Tomorrow at 3 PM", "Yes, that works", "The client presentation", "Pacific timezone", "Meeting is catching up, about an hour, just me"
-   • Key indicator: The message makes most sense as an answer to a previous assistant question
+   • Common patterns: providing missing details, specifying times/dates, confirming information, giving permission to proceed
+   • Examples: 
+     - Providing details: "Tomorrow at 3 PM", "The client presentation", "Pacific timezone", "Meeting is catching up, about an hour, just me"
+     - Confirmations: "Yes", "No", "Sure", "OK", "ok go ahead", "That works", "Yes please", "Go ahead", "Proceed"
+     - Giving permission: "ok go ahead", "yes go ahead", "sure go ahead", "that's fine", "sounds good"
+   • Key indicator: The message makes most sense as an answer to a previous assistant question or request for confirmation
    • IMPORTANT: If the user is providing meeting details (title, duration, attendees) in response to a previous question, this is ALWAYS clarification_answer
+   • CRITICAL: If the assistant just asked "Shall I create this meeting for you?" and the user responds with any form of yes/no/confirmation, this is clarification_answer
 
 3. meeting_request - User wants to schedule, book, or create a new meeting or appointment
    • Initial requests to schedule something new
@@ -1136,7 +1157,39 @@ Your task is to carefully analyze user messages and classify them into one of th
 CRITICAL RULES:
 1. If the user's message appears to be answering a question or providing requested details (even without explicit question markers), classify as "clarification_answer"
 2. If the user is providing meeting details (title, duration, attendees) in response to a previous assistant question, this is ALWAYS "clarification_answer"
-3. Look at the conversation context - if the assistant just asked for meeting details and the user is providing them, that's clarification_answer
+3. If the assistant just asked for confirmation (e.g., "Shall I create this meeting?") and the user responds with any form of yes/no/confirmation, this is clarification_answer
+4. Look at the conversation context - if the assistant just asked for meeting details or confirmation and the user is providing them, that's clarification_answer
+5. Simple confirmations like "ok", "yes", "sure", "go ahead" are almost always clarification_answer when they follow an assistant question
+
+CONTEXT ANALYSIS:
+- Review the last 2-3 messages to understand the conversation flow
+- If the assistant asked a question or requested confirmation, and the user is responding to that, it's clarification_answer
+- If the assistant said "Shall I create this meeting?" and user says "ok go ahead", that's clarification_answer
+- If the assistant asked for meeting details and user provides them, that's clarification_answer
+
+SPECIFIC EXAMPLES:
+Assistant: "Shall I create this meeting for you?"
+User: "ok go ahead"
+→ clarification_answer
+
+Assistant: "Should I proceed with booking this time slot?"
+User: "Yes"
+→ clarification_answer
+
+Assistant: "What's the meeting title?"
+User: "Catching up"
+→ clarification_answer
+
+Assistant: "How long should the meeting be?"
+User: "About an hour"
+→ clarification_answer
+
+Assistant: "Hello! How can I help you today?"
+User: "Hi there"
+→ general_conversation
+
+User: "Schedule a meeting for tomorrow"
+→ meeting_request
 
 Always classify based on the user's primary intent, even if the message contains multiple elements.
 Respond with ONLY the intent name (e.g., "meeting_request").
@@ -1196,6 +1249,23 @@ When users provide additional information (clarification_answer intent), treat i
 - If you now have enough information, proceed with the appropriate action (create meeting, check availability, etc.)
 - If still missing critical details, ask for the remaining information naturally
 - Always acknowledge the information they provided: "Great! So that's [summary of info]..."
+
+HANDLING CONFIRMATIONS:
+When users give simple confirmations (like "ok go ahead", "yes", "sure"):
+- If you just asked "Shall I create this meeting?" and they say "ok go ahead", IMMEDIATELY proceed with creating the meeting
+- If you asked for confirmation about any action and they confirm, proceed with that action
+- Don't ask for more details if you already have sufficient information from the conversation history
+- Use the information from the entire conversation to complete the task
+- Acknowledge their confirmation briefly, then proceed: "Great! I'll create that meeting for you now."
+
+EXAMPLES of handling confirmations:
+Assistant: "Shall I create this meeting for you?"
+User: "ok go ahead"
+Assistant: "Great! I'll create that meeting for you now." [Then immediately use create_event_tool with all the details from conversation history]
+
+Assistant: "Should I proceed with booking this time slot?"
+User: "Yes"
+Assistant: "Perfect! I'll book that time slot for you." [Then immediately proceed with the action]
 
 INTELLIGENT TIME PROCESSING:
 - ALWAYS extract temporal information from conversation history (yesterday, today, tomorrow, specific dates/times)
@@ -1283,8 +1353,16 @@ Always double-check that dates and times make sense before proceeding.
                 latest_message_content = latest_message.content
         
         # Use the intent classifier agent with recent context for better classification
-        # Include last few messages for context (max 3 messages)
-        context_messages = state["messages"][-3:] if len(state["messages"]) > 1 else [HumanMessage(content=latest_message_content)]
+        # Include last few messages for context (max 5 messages to ensure we capture assistant questions)
+        context_messages = state["messages"][-5:] if len(state["messages"]) > 1 else [HumanMessage(content=latest_message_content)]
+        
+        # Log context for debugging
+        logger.info(f"Intent classification context ({len(context_messages)} messages):")
+        for i, msg in enumerate(context_messages):
+            msg_type = type(msg).__name__
+            content_preview = msg.content[:100] + "..." if len(msg.content) > 100 else msg.content
+            logger.info(f"  {i+1}. {msg_type}: {content_preview}")
+        
         agent_executor = AgentExecutor(agent=self.intent_classifier, tools=[], verbose=True)
         
         try:
@@ -1334,11 +1412,21 @@ Always double-check that dates and times make sense before proceeding.
 
 IMPORTANT: Review the ENTIRE conversation history to extract ALL relevant information:
 - Meeting details (title, purpose, type)
-- Time references (tomorrow, today, specific times like "10 AM")
-- Duration ("about an hour" = 60 minutes, "30 minutes", etc.)
-- Attendees ("just me" = no attendees, specific names/emails)
+- Time references: Convert "tomorrow", "today", "next week", specific times like "10 AM" to proper datetime
+- Duration: "about an hour" = 60 minutes, "30 min" = 30 minutes
+- Attendees: Extract all relevant attendee information
+- Use get_current_time_tool to calculate exact dates from relative time references
+- If you have sufficient information, proceed with the action instead of asking for more details.
 
-If you now have sufficient information, PROCEED with the action (like creating a meeting) instead of asking for more details. Use get_current_time_tool to convert relative times to proper ISO format.""")
+CRITICAL: If the user is giving confirmation (like "ok go ahead", "yes", "sure") and you have sufficient information from the conversation history, PROCEED IMMEDIATELY with the action (like creating a meeting) instead of asking for more details.
+
+CONFIRMATION HANDLING:
+- If you just asked "Shall I create this meeting?" and they say "ok go ahead", create the meeting now
+- If you asked for confirmation about any action and they confirm, proceed with that action
+- Use get_current_time_tool to convert relative times to proper ISO format
+- Extract all meeting details from the conversation history and proceed with the action
+
+DO NOT ask for confirmation again if they've already confirmed the action.""")
             messages.insert(-1, clarification_context)  # Insert before the last user message
         else:
             # For other intents, use conversation context for better information extraction

@@ -6,7 +6,7 @@ langchain-community>=0.0.17
 langgraph>=0.0.26
 langsmith>=0.1.0,<0.2.0
 openai>=1.10.0,<2.0.0
-pydantic==2.5.2
+pydantic>=2.6.0
 python-dotenv==1.0.0
 httpx==0.24.1
 supabase==1.2.0

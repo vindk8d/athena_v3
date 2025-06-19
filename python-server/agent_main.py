@@ -546,36 +546,55 @@ async def check_availability_tool(query: str, duration_minutes: int = 30) -> str
         duration_minutes: Expected meeting duration in minutes (default 30)
     """
     try:
-        user_id = get_current_user_id()
-        user_timezone = get_user_timezone(user_id)
-        calendar_ids = get_included_calendars(user_id)
-        
-        if not calendar_ids:
-            return "No calendars configured for availability checking. Please configure calendars in the web interface."
-        
-        # Get current datetime in user's timezone
-        current_datetime = datetime.now(pytz.timezone(user_timezone))
-        
-        # Parse the query to determine time range
-        start_datetime, end_datetime = parse_relative_time_reference(query, user_timezone, current_datetime)
-        
-        # Check if the requested time is in the past
-        if start_datetime < current_datetime:
-            logger.warning(f"Attempted to check availability for past time: {start_datetime}")
-            return f"❌ Cannot check availability for past time. The requested time ({start_datetime.strftime('%Y-%m-%d %H:%M %Z')}) has already passed."
-        
-        service = get_calendar_service()
-        availability = service.check_availability(start_datetime.isoformat(), end_datetime.isoformat(), calendar_ids)
-        
-        if availability['is_free']:
-            return f"✅ Time slot {start_datetime.strftime('%Y-%m-%d %H:%M')} to {end_datetime.strftime('%H:%M %Z')} is FREE across all configured calendars"
-        else:
-            result = f"❌ Time slot {start_datetime.strftime('%Y-%m-%d %H:%M')} to {end_datetime.strftime('%H:%M %Z')} has CONFLICTS:\n"
-            for conflict in availability['conflicts']:
-                conflict_start = datetime.fromisoformat(conflict['start'].replace('Z', '+00:00'))
-                conflict_end = datetime.fromisoformat(conflict['end'].replace('Z', '+00:00'))
-                result += f"- Busy from {conflict_start.strftime('%H:%M')} to {conflict_end.strftime('%H:%M')}\n"
-            return result
+        # Check if we have user context (for production) or if we're in demo mode (LangGraph Studio)
+        try:
+            user_id = get_current_user_id()
+            user_timezone = get_user_timezone(user_id)
+            calendar_ids = get_included_calendars(user_id)
+            
+            if not calendar_ids:
+                return "No calendars configured for availability checking. Please configure calendars in the web interface."
+            
+            # Get current datetime in user's timezone
+            current_datetime = datetime.now(pytz.timezone(user_timezone))
+            
+            # Parse the query to determine time range
+            start_datetime, end_datetime = parse_relative_time_reference(query, user_timezone, current_datetime)
+            
+            # Check if the requested time is in the past
+            if start_datetime < current_datetime:
+                logger.warning(f"Attempted to check availability for past time: {start_datetime}")
+                return f"❌ Cannot check availability for past time. The requested time ({start_datetime.strftime('%Y-%m-%d %H:%M %Z')}) has already passed."
+            
+            service = get_calendar_service()
+            availability = service.check_availability(start_datetime.isoformat(), end_datetime.isoformat(), calendar_ids)
+            
+            if availability['is_free']:
+                return f"✅ Time slot {start_datetime.strftime('%Y-%m-%d %H:%M')} to {end_datetime.strftime('%H:%M %Z')} is FREE across all configured calendars"
+            else:
+                result = f"❌ Time slot {start_datetime.strftime('%Y-%m-%d %H:%M')} to {end_datetime.strftime('%H:%M %Z')} has CONFLICTS:\n"
+                for conflict in availability['conflicts']:
+                    conflict_start = datetime.fromisoformat(conflict['start'].replace('Z', '+00:00'))
+                    conflict_end = datetime.fromisoformat(conflict['end'].replace('Z', '+00:00'))
+                    result += f"- Busy from {conflict_start.strftime('%H:%M')} to {conflict_end.strftime('%H:%M')}\n"
+                return result
+                
+        except ValueError as e:
+            if "User ID not set" in str(e) or "Calendar service not initialized" in str(e):
+                # Demo mode for LangGraph Studio
+                logger.info("Running in demo mode - no user context available")
+                
+                # Parse the query to determine time range (using UTC)
+                current_datetime = datetime.now(pytz.UTC)
+                start_datetime, end_datetime = parse_relative_time_reference(query, "UTC", current_datetime)
+                
+                # Demo response - simulate availability check
+                if "tomorrow" in query.lower() or "next" in query.lower():
+                    return f"✅ Demo mode: Time slot {start_datetime.strftime('%Y-%m-%d %H:%M')} to {end_datetime.strftime('%H:%M %Z')} appears to be FREE\n\nNote: This is a demo response. In production, this would check your actual Google Calendar."
+                else:
+                    return f"❌ Demo mode: Time slot {start_datetime.strftime('%Y-%m-%d %H:%M')} to {end_datetime.strftime('%H:%M %Z')} has CONFLICTS\n\nNote: This is a demo response. In production, this would check your actual Google Calendar."
+            else:
+                raise
             
     except Exception as e:
         logger.error(f"Error in check_availability_tool: {e}")
@@ -604,43 +623,71 @@ def create_event_tool(title: str, start_datetime: str, end_datetime: str,
         if not start_datetime or not end_datetime:
             return "❌ Start and end times are required"
         
-        user_id = get_current_user_id()
-        user_timezone = get_user_timezone(user_id)
-        calendar_ids = get_included_calendars(user_id)
-        
-        if not calendar_ids:
-            return "No calendars configured for creating events. Please configure calendars in the web interface."
-        
-        # Check if the start time is in the past
-        start_dt = datetime.fromisoformat(start_datetime.replace('Z', '+00:00'))
-        current_datetime = datetime.now(pytz.timezone(user_timezone))
-        
-        if start_dt < current_datetime:
-            return f"❌ Cannot create event in the past: {start_datetime}"
-        
-        # Use the first configured calendar (usually primary) for creating events
-        primary_calendar = calendar_ids[0]
-        calendar_timezone = get_calendar_timezone(user_id, primary_calendar)
-        
-        service = get_calendar_service()
-        
-        event = service.create_event(
-            primary_calendar, title, description, start_datetime, 
-            end_datetime, calendar_timezone, attendee_emails or [], location
-        )
-        
-        result = f"✅ Meeting scheduled successfully on your calendar!\n"
-        result += f"Title: {event['summary']}\n"
-        result += f"Time: {event['start']} to {event['end']}\n"
-        result += f"Event ID: {event['id']}\n"
-        if attendee_emails:
-            result += f"Attendees: {', '.join(attendee_emails)}\n"
-        if location:
-            result += f"Location: {location}\n"
-        if event.get('html_link'):
-            result += f"Calendar link: {event['html_link']}\n"
-        
-        return result
+        try:
+            user_id = get_current_user_id()
+            user_timezone = get_user_timezone(user_id)
+            calendar_ids = get_included_calendars(user_id)
+            
+            if not calendar_ids:
+                return "No calendars configured for creating events. Please configure calendars in the web interface."
+            
+            # Check if the start time is in the past
+            start_dt = datetime.fromisoformat(start_datetime.replace('Z', '+00:00'))
+            current_datetime = datetime.now(pytz.timezone(user_timezone))
+            
+            if start_dt < current_datetime:
+                return f"❌ Cannot create event in the past: {start_datetime}"
+            
+            # Use the first configured calendar (usually primary) for creating events
+            primary_calendar = calendar_ids[0]
+            calendar_timezone = get_calendar_timezone(user_id, primary_calendar)
+            
+            service = get_calendar_service()
+            
+            event = service.create_event(
+                primary_calendar, title, description, start_datetime, 
+                end_datetime, calendar_timezone, attendee_emails or [], location
+            )
+            
+            result = f"✅ Meeting scheduled successfully on your calendar!\n"
+            result += f"Title: {event['summary']}\n"
+            result += f"Time: {event['start']} to {event['end']}\n"
+            result += f"Event ID: {event['id']}\n"
+            if attendee_emails:
+                result += f"Attendees: {', '.join(attendee_emails)}\n"
+            if location:
+                result += f"Location: {location}\n"
+            if event.get('html_link'):
+                result += f"Calendar link: {event['html_link']}\n"
+            
+            return result
+            
+        except ValueError as e:
+            if "User ID not set" in str(e) or "Calendar service not initialized" in str(e):
+                # Demo mode for LangGraph Studio
+                logger.info("Running in demo mode - no user context available")
+                
+                # Validate the datetime format
+                try:
+                    start_dt = datetime.fromisoformat(start_datetime.replace('Z', '+00:00'))
+                    end_dt = datetime.fromisoformat(end_datetime.replace('Z', '+00:00'))
+                except ValueError:
+                    return "❌ Invalid datetime format. Please use ISO format (e.g., 2024-01-15T10:00:00+00:00)"
+                
+                # Demo response
+                result = f"✅ Demo mode: Meeting would be scheduled successfully!\n"
+                result += f"Title: {title}\n"
+                result += f"Time: {start_datetime} to {end_datetime}\n"
+                result += f"Event ID: demo_event_12345\n"
+                if attendee_emails:
+                    result += f"Attendees: {', '.join(attendee_emails)}\n"
+                if location:
+                    result += f"Location: {location}\n"
+                result += f"\nNote: This is a demo response. In production, this would create the event in your actual Google Calendar."
+                
+                return result
+            else:
+                raise
         
     except Exception as e:
         logger.error(f"Error in create_event_tool: {e}")
@@ -660,41 +707,59 @@ def get_events_tool(start_datetime: str, end_datetime: str) -> str:
         if not start_datetime or not end_datetime:
             return "❌ Start and end dates are required"
         
-        user_id = get_current_user_id()
-        calendar_ids = get_included_calendars(user_id)
-        
-        if not calendar_ids:
-            return "No calendars configured for checking events. Please configure calendars in the web interface."
-        
-        service = get_calendar_service()
-        all_events = []
-        
-        # Get events from all included calendars
-        for calendar_id in calendar_ids:
-            try:
-                # Convert datetime to date for the API call
-                start_date = start_datetime.split('T')[0]
-                end_date = end_datetime.split('T')[0]
-                events = service.get_events(calendar_id, start_date, end_date)
-                all_events.extend(events)
-            except Exception as e:
-                logger.warning(f"Error getting events from calendar {calendar_id}: {e}")
-        
-        if not all_events:
-            return f"No events found from {start_datetime} to {end_datetime}"
-        
-        # Sort events by start time
-        all_events.sort(key=lambda x: x['start'])
-        
-        result = f"Events from {start_datetime} to {end_datetime}:\n"
-        for event in all_events:
-            result += f"- {event['summary']} ({event['start']} - {event['end']})\n"
-            if event['location']:
-                result += f"  Location: {event['location']}\n"
-            if event['attendees']:
-                result += f"  Attendees: {', '.join(event['attendees'])}\n"
-        
-        return result
+        try:
+            user_id = get_current_user_id()
+            calendar_ids = get_included_calendars(user_id)
+            
+            if not calendar_ids:
+                return "No calendars configured for checking events. Please configure calendars in the web interface."
+            
+            service = get_calendar_service()
+            all_events = []
+            
+            # Get events from all included calendars
+            for calendar_id in calendar_ids:
+                try:
+                    # Convert datetime to date for the API call
+                    start_date = start_datetime.split('T')[0]
+                    end_date = end_datetime.split('T')[0]
+                    events = service.get_events(calendar_id, start_date, end_date)
+                    all_events.extend(events)
+                except Exception as e:
+                    logger.warning(f"Error getting events from calendar {calendar_id}: {e}")
+            
+            if not all_events:
+                return f"No events found from {start_datetime} to {end_datetime}"
+            
+            # Sort events by start time
+            all_events.sort(key=lambda x: x['start'])
+            
+            result = f"Events from {start_datetime} to {end_datetime}:\n"
+            for event in all_events:
+                result += f"- {event['summary']} ({event['start']} - {event['end']})\n"
+                if event['location']:
+                    result += f"  Location: {event['location']}\n"
+                if event['attendees']:
+                    result += f"  Attendees: {', '.join(event['attendees'])}\n"
+            
+            return result
+            
+        except ValueError as e:
+            if "User ID not set" in str(e) or "Calendar service not initialized" in str(e):
+                # Demo mode for LangGraph Studio
+                logger.info("Running in demo mode - no user context available")
+                
+                # Demo response
+                result = f"Demo mode: Events from {start_datetime} to {end_datetime}:\n"
+                result += f"- Team Standup (2024-01-15T09:00:00Z - 2024-01-15T09:30:00Z)\n"
+                result += f"  Location: Conference Room A\n"
+                result += f"- Client Meeting (2024-01-15T14:00:00Z - 2024-01-15T15:00:00Z)\n"
+                result += f"  Attendees: client@example.com\n"
+                result += f"\nNote: This is a demo response. In production, this would show your actual Google Calendar events."
+                
+                return result
+            else:
+                raise
         
     except Exception as e:
         logger.error(f"Error in get_events_tool: {e}")
@@ -749,23 +814,44 @@ def list_calendars_tool() -> str:
     names, timezones, and access levels.
     """
     try:
-        service = get_calendar_service()
-        calendars = service.list_calendars()
-        
-        if not calendars:
-            return "No calendars found."
-        
-        # Format the response
-        calendar_list = []
-        for cal in calendars:
-            calendar_list.append(
-                f"• {cal['summary']} ({cal['id']})\n"
-                f"  - Timezone: {cal['timezone']}\n"
-                f"  - Access: {cal['access_role']}\n"
-                f"  - Primary: {'Yes' if cal['primary'] else 'No'}"
-            )
-        
-        return "Available calendars:\n" + "\n\n".join(calendar_list)
+        try:
+            service = get_calendar_service()
+            calendars = service.list_calendars()
+            
+            if not calendars:
+                return "No calendars found."
+            
+            # Format the response
+            calendar_list = []
+            for cal in calendars:
+                calendar_list.append(
+                    f"• {cal['summary']} ({cal['id']})\n"
+                    f"  - Timezone: {cal['timezone']}\n"
+                    f"  - Access: {cal['access_role']}\n"
+                    f"  - Primary: {'Yes' if cal['primary'] else 'No'}"
+                )
+            
+            return "Available calendars:\n" + "\n\n".join(calendar_list)
+            
+        except ValueError as e:
+            if "Calendar service not initialized" in str(e):
+                # Demo mode for LangGraph Studio
+                logger.info("Running in demo mode - no calendar service available")
+                
+                result = "Demo mode: Available calendars:\n\n"
+                result += "• Primary Calendar (primary@example.com)\n"
+                result += "  - Timezone: UTC\n"
+                result += "  - Access: owner\n"
+                result += "  - Primary: Yes\n\n"
+                result += "• Work Calendar (work@company.com)\n"
+                result += "  - Timezone: US/Pacific\n"
+                result += "  - Access: writer\n"
+                result += "  - Primary: No\n\n"
+                result += "Note: This is a demo response. In production, this would show your actual Google Calendar list."
+                
+                return result
+            else:
+                raise
         
     except Exception as e:
         logger.error(f"Error listing calendars: {e}")
@@ -782,60 +868,88 @@ def modify_event_tool(event_id: str, calendar_id: str = None, title: str = None,
     try:
         if not event_id:
             return "❌ Event ID is required for modification"
-        user_id = get_current_user_id()
-        calendar_ids = get_included_calendars(user_id)
-        if not calendar_ids:
-            return "No calendars configured. Please configure calendars in the web interface."
-        target_calendar = calendar_id or calendar_ids[0]
-        service = get_calendar_service()
+        
         try:
-            current_event = service.service.events().get(
-                calendarId=target_calendar, eventId=event_id
+            user_id = get_current_user_id()
+            calendar_ids = get_included_calendars(user_id)
+            if not calendar_ids:
+                return "No calendars configured. Please configure calendars in the web interface."
+            target_calendar = calendar_id or calendar_ids[0]
+            service = get_calendar_service()
+            try:
+                current_event = service.service.events().get(
+                    calendarId=target_calendar, eventId=event_id
+                ).execute()
+            except HttpError as e:
+                if e.resp.status == 404:
+                    return f"❌ Event with ID '{event_id}' not found in calendar '{target_calendar}'"
+                else:
+                    raise
+            update_body = {}
+            if title is not None:
+                update_body['summary'] = title
+            if start_datetime is not None:
+                update_body['start'] = {
+                    'dateTime': start_datetime,
+                    'timeZone': current_event.get('start', {}).get('timeZone', 'UTC')
+                }
+            if end_datetime is not None:
+                update_body['end'] = {
+                    'dateTime': end_datetime,
+                    'timeZone': current_event.get('end', {}).get('timeZone', 'UTC')
+                }
+            if description is not None:
+                update_body['description'] = description
+            if location is not None:
+                update_body['location'] = location
+            if attendee_emails is not None:
+                update_body['attendees'] = [{'email': email} for email in attendee_emails]
+            if not update_body:
+                return f"Current event details:\nTitle: {current_event.get('summary', 'No title')}\nStart: {current_event.get('start', {}).get('dateTime', 'No start time')}\nEnd: {current_event.get('end', {}).get('dateTime', 'No end time')}"
+            updated_event = service.service.events().update(
+                calendarId=target_calendar,
+                eventId=event_id,
+                body=update_body
             ).execute()
-        except HttpError as e:
-            if e.resp.status == 404:
-                return f"❌ Event with ID '{event_id}' not found in calendar '{target_calendar}'"
+            result = f"✅ Event updated successfully!\n"
+            result += f"Event ID: {updated_event['id']}\n"
+            result += f"Title: {updated_event.get('summary', 'No title')}\n"
+            result += f"Start: {updated_event.get('start', {}).get('dateTime', 'No start time')}\n"
+            result += f"End: {updated_event.get('end', {}).get('dateTime', 'No end time')}\n"
+            if updated_event.get('attendees'):
+                attendees = [att.get('email') for att in updated_event['attendees']]
+                result += f"Attendees: {', '.join(attendees)}\n"
+            if updated_event.get('location'):
+                result += f"Location: {updated_event['location']}\n"
+            if updated_event.get('htmlLink'):
+                result += f"Calendar link: {updated_event['htmlLink']}\n"
+            return result
+            
+        except ValueError as e:
+            if "User ID not set" in str(e) or "Calendar service not initialized" in str(e):
+                # Demo mode for LangGraph Studio
+                logger.info("Running in demo mode - no user context available")
+                
+                result = f"✅ Demo mode: Event would be updated successfully!\n"
+                result += f"Event ID: {event_id}\n"
+                if title:
+                    result += f"Title: {title}\n"
+                if start_datetime:
+                    result += f"Start: {start_datetime}\n"
+                if end_datetime:
+                    result += f"End: {end_datetime}\n"
+                if attendee_emails:
+                    result += f"Attendees: {', '.join(attendee_emails)}\n"
+                if location:
+                    result += f"Location: {location}\n"
+                if description:
+                    result += f"Description: {description}\n"
+                result += f"\nNote: This is a demo response. In production, this would modify the event in your actual Google Calendar."
+                
+                return result
             else:
                 raise
-        update_body = {}
-        if title is not None:
-            update_body['summary'] = title
-        if start_datetime is not None:
-            update_body['start'] = {
-                'dateTime': start_datetime,
-                'timeZone': current_event.get('start', {}).get('timeZone', 'UTC')
-            }
-        if end_datetime is not None:
-            update_body['end'] = {
-                'dateTime': end_datetime,
-                'timeZone': current_event.get('end', {}).get('timeZone', 'UTC')
-            }
-        if description is not None:
-            update_body['description'] = description
-        if location is not None:
-            update_body['location'] = location
-        if attendee_emails is not None:
-            update_body['attendees'] = [{'email': email} for email in attendee_emails]
-        if not update_body:
-            return f"Current event details:\nTitle: {current_event.get('summary', 'No title')}\nStart: {current_event.get('start', {}).get('dateTime', 'No start time')}\nEnd: {current_event.get('end', {}).get('dateTime', 'No end time')}"
-        updated_event = service.service.events().update(
-            calendarId=target_calendar,
-            eventId=event_id,
-            body=update_body
-        ).execute()
-        result = f"✅ Event updated successfully!\n"
-        result += f"Event ID: {updated_event['id']}\n"
-        result += f"Title: {updated_event.get('summary', 'No title')}\n"
-        result += f"Start: {updated_event.get('start', {}).get('dateTime', 'No start time')}\n"
-        result += f"End: {updated_event.get('end', {}).get('dateTime', 'No end time')}\n"
-        if updated_event.get('attendees'):
-            attendees = [att.get('email') for att in updated_event['attendees']]
-            result += f"Attendees: {', '.join(attendees)}\n"
-        if updated_event.get('location'):
-            result += f"Location: {updated_event['location']}\n"
-        if updated_event.get('htmlLink'):
-            result += f"Calendar link: {updated_event['htmlLink']}\n"
-        return result
+                
     except Exception as e:
         logger.error(f"Error in modify_event_tool: {e}")
         return f"I had trouble modifying the event. Please check the event ID and try again."
@@ -848,29 +962,46 @@ def delete_event_tool(event_id: str, calendar_id: str = None) -> str:
     try:
         if not event_id:
             return "❌ Event ID is required for deletion"
-        user_id = get_current_user_id()
-        calendar_ids = get_included_calendars(user_id)
-        if not calendar_ids:
-            return "No calendars configured. Please configure calendars in the web interface."
-        target_calendar = calendar_id or calendar_ids[0]
-        service = get_calendar_service()
+        
         try:
-            current_event = service.service.events().get(
-                calendarId=target_calendar, eventId=event_id
+            user_id = get_current_user_id()
+            calendar_ids = get_included_calendars(user_id)
+            if not calendar_ids:
+                return "No calendars configured. Please configure calendars in the web interface."
+            target_calendar = calendar_id or calendar_ids[0]
+            service = get_calendar_service()
+            try:
+                current_event = service.service.events().get(
+                    calendarId=target_calendar, eventId=event_id
+                ).execute()
+            except HttpError as e:
+                if e.resp.status == 404:
+                    return f"❌ Event with ID '{event_id}' not found in calendar '{target_calendar}'"
+                else:
+                    raise
+            service.service.events().delete(
+                calendarId=target_calendar,
+                eventId=event_id
             ).execute()
-        except HttpError as e:
-            if e.resp.status == 404:
-                return f"❌ Event with ID '{event_id}' not found in calendar '{target_calendar}'"
+            result = f"✅ Event deleted successfully!\n"
+            result += f"Deleted event: {current_event.get('summary', 'No title')}\n"
+            result += f"Event ID: {event_id}\n"
+            return result
+            
+        except ValueError as e:
+            if "User ID not set" in str(e) or "Calendar service not initialized" in str(e):
+                # Demo mode for LangGraph Studio
+                logger.info("Running in demo mode - no user context available")
+                
+                result = f"✅ Demo mode: Event would be deleted successfully!\n"
+                result += f"Deleted event: Demo Meeting\n"
+                result += f"Event ID: {event_id}\n"
+                result += f"\nNote: This is a demo response. In production, this would delete the event from your actual Google Calendar."
+                
+                return result
             else:
                 raise
-        service.service.events().delete(
-            calendarId=target_calendar,
-            eventId=event_id
-        ).execute()
-        result = f"✅ Event deleted successfully!\n"
-        result += f"Deleted event: {current_event.get('summary', 'No title')}\n"
-        result += f"Event ID: {event_id}\n"
-        return result
+                
     except Exception as e:
         logger.error(f"Error in delete_event_tool: {e}")
         return f"I had trouble deleting the event. Please check the event ID and try again."
@@ -973,6 +1104,8 @@ class SimpleAthenaAgent:
         intent_prompt = ChatPromptTemplate.from_messages([
             ("system", """You are an intent classifier for Athena, a professional executive assistant AI. 
 
+Your primary role is to help coordinate with the user's colleagues (found in the contacts table) to book meetings with the user. You classify messages to determine how to best assist with this coordination.
+
 Your task is to carefully analyze user messages and classify them into one of these intents:
 
 1. general_conversation - Greetings, casual chat, off-topic discussions
@@ -980,8 +1113,9 @@ Your task is to carefully analyze user messages and classify them into one of th
 2. clarification_answer - User is providing additional details or answering a clarifying question that the assistant asked
    • Look for messages that are clearly responding to a previous question from the assistant
    • Common patterns: providing missing details, specifying times/dates, confirming information
-   • Examples: "Tomorrow at 3 PM", "Yes, that works", "The client presentation", "Pacific timezone"
+   • Examples: "Tomorrow at 3 PM", "Yes, that works", "The client presentation", "Pacific timezone", "Meeting is catching up, about an hour, just me"
    • Key indicator: The message makes most sense as an answer to a previous assistant question
+   • IMPORTANT: If the user is providing meeting details (title, duration, attendees) in response to a previous question, this is ALWAYS clarification_answer
 
 3. meeting_request - User wants to schedule, book, or create a new meeting or appointment
    • Initial requests to schedule something new
@@ -999,7 +1133,10 @@ Your task is to carefully analyze user messages and classify them into one of th
 7. time_question - User asks about current time, timezone information, or date/time clarification
    • Examples: "What time is it?", "What timezone are you using?"
 
-CRITICAL: If the user's message appears to be answering a question or providing requested details (even without explicit question markers), classify as "clarification_answer".
+CRITICAL RULES:
+1. If the user's message appears to be answering a question or providing requested details (even without explicit question markers), classify as "clarification_answer"
+2. If the user is providing meeting details (title, duration, attendees) in response to a previous assistant question, this is ALWAYS "clarification_answer"
+3. Look at the conversation context - if the assistant just asked for meeting details and the user is providing them, that's clarification_answer
 
 Always classify based on the user's primary intent, even if the message contains multiple elements.
 Respond with ONLY the intent name (e.g., "meeting_request").
@@ -1015,6 +1152,10 @@ Respond with ONLY the intent name (e.g., "meeting_request").
         execution_prompt = ChatPromptTemplate.from_messages([
             ("system", """You are Athena, a professional and intelligent executive assistant AI.
 
+Your primary role is to coordinate with the user's colleagues (found in the contacts table) to book meetings with the user. You shall perform all calendar operations using the respective tools to connect and perform actions with the Google Calendar API.
+
+DEMO MODE NOTE: When running in LangGraph Studio or other demo environments, calendar tools will provide demo responses instead of connecting to actual Google Calendar. This is normal and expected for testing purposes.
+
 Your role is to help users manage their calendar and schedule meetings efficiently. You have access to powerful calendar tools:
 - check_availability_tool: Check availability using natural language queries (e.g., "tomorrow at 2 PM", "next week")
 - create_event_tool: Create calendar events and meetings with full Google Calendar integration
@@ -1026,6 +1167,20 @@ Your role is to help users manage their calendar and schedule meetings efficient
 - delete_event_tool: Delete calendar events permanently
 - find_available_slots_tool: Find multiple available time slots within a time range when you have busy times
 - parse_specific_time_tool: Parse specific times from queries when you know the general time period
+
+## Colleague Coordination Process:
+1. **Identify the Request**: When a colleague wants to meet with your user
+2. **Check Availability**: Use calendar tools to check your user's availability
+3. **Propose Times**: Suggest available time slots to the colleague
+4. **Confirm Details**: Gather meeting title, duration, and any other details
+5. **Create Meeting**: Use calendar tools to create the meeting in Google Calendar
+6. **Confirm Booking**: Provide confirmation to the colleague
+
+## Calendar Tool Usage Requirements:
+- **Always use calendar tools** for any calendar-related operations
+- **Never skip tool usage** when calendar operations are needed
+- **Use Google Calendar API** through the provided tools for all calendar actions
+- **Validate all inputs** before using tools to ensure proper formatting
 
 IMPORTANT GUIDELINES:
 1. **Be Conversational & Natural**: Always communicate in a warm, professional, and human-like manner
@@ -1136,6 +1291,9 @@ Always double-check that dates and times make sense before proceeding.
             result = await agent_executor.ainvoke({"messages": context_messages})
             intent = result["output"].strip().lower()
             
+            # Clean up the intent - remove markdown formatting and extra characters
+            intent = intent.replace('*', '').replace('`', '').replace('"', '').replace("'", '').strip()
+            
             # Validate intent
             valid_intents = [
                 "general_conversation", "clarification_answer", "meeting_request", 
@@ -1144,6 +1302,7 @@ Always double-check that dates and times make sense before proceeding.
             ]
             
             if intent not in valid_intents:
+                logger.warning(f"Intent '{intent}' not in valid intents: {valid_intents}")
                 intent = "general_conversation"
             
             state["message_intent"] = intent

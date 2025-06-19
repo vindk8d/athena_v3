@@ -1648,15 +1648,16 @@ DO NOT ask for confirmation again if they've already confirmed the action.""")
         return intent
     
     async def process_message(self, contact_id: str, message: str, user_id: str, 
-                            user_details: Dict[str, Any] = None, access_token: str = None) -> Dict[str, Any]:
+                            user_details: Dict[str, Any] = None, access_token: str = None, 
+                            refresh_token: str = None) -> Dict[str, Any]:
         """Process an incoming message through the simplified workflow."""
         try:
             logger.info("🚀 Starting Simple LangGraph execution")
             
-            # Set up calendar service if needed
-            if access_token:
+            # Set up calendar service if needed (only if not already set up)
+            if access_token and not _calendar_service:
                 try:
-                    set_calendar_service(access_token)
+                    set_calendar_service(access_token, refresh_token, user_id, self.llm)
                 except Exception as e:
                     logger.error(f"Error setting up calendar service: {str(e)}")
             
@@ -1669,6 +1670,7 @@ DO NOT ask for confirmation again if they've already confirmed the action.""")
                 metadata={
                     "user_details": user_details,
                     "access_token": access_token is not None,
+                    "refresh_token": refresh_token is not None,
                     "timestamp": datetime.now().isoformat()
                 }
             )

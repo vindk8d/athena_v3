@@ -163,7 +163,8 @@ async def process_message(request: ProcessMessageRequest):
             message=colleague_message,
             user_id=user_id,
             user_details=user_details,
-            access_token=request.oauth_access_token
+            access_token=request.oauth_access_token,
+            refresh_token=request.oauth_refresh_token
         )
         
         logger.info(f"Simplified LangGraph executive assistant response generated successfully")

@@ -7,24 +7,32 @@ from langchain import hub
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langgraph.graph import StateGraph, END
 from langgraph.graph.message import add_messages
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from langgraph.checkpoint.memory import MemorySaver
 import logging
 from datetime import datetime, timedelta
 import pytz
 import json
 import os
 import re
+import asyncio
 from pydantic import BaseModel, Field
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from google.auth.transport.requests import Request
 from supabase import create_client, Client
+import psycopg
 
 from config import Config
 
 logger = logging.getLogger(__name__)
 # Global LLM instance for availability mode detection
 _llm_instance = None
+
+# Summarization configuration
+SUMMARY_THRESHOLD = 10  # Summarize when history exceeds 10 messages
+MESSAGES_TO_RETAIN = 6  # Always keep the last 6 messages as-is
 
 # # --- Helper functions copied from tools.py for tool self-containment ---
 # async def parse_time_with_llm(time_reference: str, timezone: str = "UTC", base_datetime: datetime = None) -> tuple:
@@ -573,8 +581,9 @@ def get_current_user_id() -> str:
 
 # State Schema
 class SimpleState(TypedDict):
-    """Simplified state schema for Athena agent using proper message handling."""
+    """Enhanced state schema for Athena agent with checkpointing and summarization."""
     messages: Annotated[List[BaseMessage], add_messages]
+    conversation_summary: Optional[str]  # For conversation summarization
     user_id: str
     contact_id: str
     message_intent: Optional[str]
@@ -1283,6 +1292,88 @@ tools = [check_availability_tool, create_event_tool, get_events_tool, get_curren
          list_calendars_tool, modify_event_tool, delete_event_tool, find_available_slots_tool, 
          get_available_slots_for_period_tool]  # Removed convert_relative_time_tool and parse_specific_time_tool
 
+# Checkpoint configuration
+async def create_checkpoint_saver():
+    """Create a PostgreSQL checkpoint saver for state persistence using Supabase."""
+    try:
+        # Try to get Supabase connection details
+        supabase_url = os.getenv("SUPABASE_URL")
+        supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+        
+        if not supabase_url or not supabase_key:
+            logger.warning("Supabase credentials not found, falling back to memory saver")
+            return MemorySaver()
+        
+        # Extract connection details from Supabase URL
+        # Supabase URL format: https://[project-id].supabase.co
+        # We need to construct the PostgreSQL connection string
+        project_id = supabase_url.replace("https://", "").replace(".supabase.co", "")
+        
+        # Construct PostgreSQL connection string for Supabase
+        # Note: You may need to adjust the port and database name based on your Supabase setup
+        connection_string = f"postgresql://postgres:{supabase_key}@db.{project_id}.supabase.co:5432/postgres"
+        
+        # Create async connection
+        conn = await psycopg.AsyncConnection.connect(
+            connection_string,
+            autocommit=True,
+            prepare_threshold=0  # Disable prepared statements to avoid conflicts
+        )
+        
+        # Create checkpointer
+        checkpointer = AsyncPostgresSaver(conn)
+        await checkpointer.setup()
+        
+        logger.info("PostgreSQL checkpoint saver initialized successfully")
+        return checkpointer
+        
+    except Exception as e:
+        logger.error(f"Failed to create PostgreSQL checkpoint saver: {e}")
+        logger.info("Falling back to memory saver")
+        return MemorySaver()
+
+async def archive_conversation_to_messages_table(contact_id: str, user_id: str, messages: List[BaseMessage]):
+    """Archive the complete conversation to the messages table for UI and long-term storage."""
+    try:
+        supabase = get_supabase_client()
+        if not supabase:
+            logger.warning("Supabase client not available for archiving")
+            return
+        
+        # Clear existing messages for this contact
+        supabase.table('messages').delete().eq('contact_id', contact_id).execute()
+        
+        # Insert all messages
+        message_records = []
+        for i, message in enumerate(messages):
+            if isinstance(message, HumanMessage):
+                sender = 'user'
+            elif isinstance(message, AIMessage):
+                sender = 'bot'
+            else:
+                continue  # Skip system messages for archival
+            
+            message_records.append({
+                'contact_id': contact_id,
+                'sender': sender,
+                'channel': 'telegram',  # Default channel
+                'content': message.content,
+                'status': 'sent',
+                'metadata': {
+                    'message_index': i,
+                    'message_type': type(message).__name__,
+                    'archived_at': datetime.now().isoformat()
+                },
+                'created_at': datetime.now().isoformat()
+            })
+        
+        if message_records:
+            supabase.table('messages').insert(message_records).execute()
+            logger.info(f"Archived {len(message_records)} messages for contact {contact_id}")
+        
+    except Exception as e:
+        logger.error(f"Error archiving messages: {e}")
+
 class SimpleAthenaAgent:
     """Simplified Athena agent with cleaner architecture."""
     
@@ -1312,6 +1403,10 @@ class SimpleAthenaAgent:
             ("system", """You are an intent classifier for Athena, a professional executive assistant AI. 
 
 Your primary role is to help coordinate with the user's colleagues (found in the contacts table) to book meetings with the user. You classify messages to determine how to best assist with this coordination.
+
+CONTEXT FOR YOUR TASK:
+You will be given a summary of the early part of the conversation (if available), followed by the most recent messages.
+Base your classification on the COMBINATION of the summary and the recent messages. The most recent messages are the most important for determining the user's immediate intent.
 
 Your task is to carefully analyze user messages and classify them into one of these intents:
 
@@ -1526,18 +1621,23 @@ Always double-check that dates and times make sense before proceeding.
         
         return create_tool_calling_agent(self.llm, tools, execution_prompt)
     
-    def _create_graph(self) -> StateGraph:
-        """Create the LangGraph workflow."""
+    async def _create_graph(self) -> StateGraph:
+        """Create the LangGraph workflow with checkpointing and enhanced features."""
         # Initialize the graph
         workflow = StateGraph(SimpleState)
         
         # Add nodes
+        workflow.add_node("summarizer", self._summarizer_node)
         workflow.add_node("intent_classifier", self._intent_classifier_node)
         workflow.add_node("execution_decider", self._execution_decider_node)
         workflow.add_node("general_conversation", self._general_conversation_node)
+        workflow.add_node("archiver", self._archiver_node)
         
-        # Set entry point
-        workflow.set_entry_point("intent_classifier")
+        # Set entry point to summarizer
+        workflow.set_entry_point("summarizer")
+        
+        # Connect summarizer to intent classifier
+        workflow.add_edge("summarizer", "intent_classifier")
         
         # Add routing from intent classifier
         workflow.add_conditional_edges(
@@ -1554,13 +1654,101 @@ Always double-check that dates and times make sense before proceeding.
             }
         )
         
-        # After execution_decider or general_conversation, go to END
-        workflow.add_edge("general_conversation", END)
-        workflow.add_edge("execution_decider", END)
+        # Connect both paths to archiver before END
+        workflow.add_edge("general_conversation", "archiver")
+        workflow.add_edge("execution_decider", "archiver")
+        workflow.add_edge("archiver", END)
         
-        return workflow.compile()
+        # Create checkpointer
+        checkpointer = await create_checkpoint_saver()
+        
+        return workflow.compile(checkpointer=checkpointer)
     
     # Node implementations
+    async def _summarizer_node(self, state: SimpleState) -> SimpleState:
+        """Trims and summarizes the conversation history for cost efficiency."""
+        logger.info("📝 Summarizer Node")
+        
+        messages = state.get("messages", [])
+        
+        if len(messages) > SUMMARY_THRESHOLD:
+            logger.info(f"Conversation length ({len(messages)}) exceeds threshold ({SUMMARY_THRESHOLD}). Summarizing...")
+            
+            # 1. Identify what to summarize and what to keep
+            messages_to_summarize = messages[:-MESSAGES_TO_RETAIN]
+            retained_messages = messages[-MESSAGES_TO_RETAIN:]
+            
+            # 2. Create the text to be summarized
+            previous_summary = state.get("conversation_summary") or ""
+            summary_prompt_text = "\n".join(
+                [f"{type(m).__name__}: {m.content}" for m in messages_to_summarize]
+            )
+            
+            # 3. Create the summarization prompt
+            summarization_prompt = f"""You are a conversation summarizer for Athena, an executive assistant AI. Your task is to create a concise summary of the provided conversation excerpt.
+
+Previous summary (for context):
+{previous_summary}
+
+New conversation to summarize:
+{summary_prompt_text}
+
+Please provide a new, consolidated summary that incorporates both the previous summary and the new conversation.
+Preserve key information like:
+- Names and contact details
+- Meeting requests and scheduling details
+- Calendar events and availability discussions
+- Important dates, times, and deadlines
+- Decisions made and actions taken
+- User preferences and requirements
+
+Focus on information that would be relevant for future interactions with this contact.
+
+New consolidated summary:"""
+            
+            try:
+                # 4. Invoke the LLM for summarization
+                summary_response = await self.llm.ainvoke([HumanMessage(content=summarization_prompt)])
+                new_summary = summary_response.content
+                
+                logger.info(f"Generated new summary of length {len(new_summary)}")
+                
+                # 5. Update the state
+                state = {
+                    **state,
+                    "conversation_summary": new_summary,
+                    "messages": retained_messages  # The message history is now trimmed
+                }
+                
+            except Exception as e:
+                logger.error(f"Error in summarization: {e}")
+                # If summarization fails, just keep the recent messages
+                state = {
+                    **state,
+                    "messages": retained_messages
+                }
+        
+        return state
+    
+    async def _archiver_node(self, state: SimpleState) -> SimpleState:
+        """Archive the conversation to the messages table for UI and long-term storage."""
+        logger.info("🗄️ Archiver Node")
+        
+        try:
+            messages = state.get("messages", [])
+            contact_id = state.get("contact_id")
+            user_id = state.get("user_id")
+            
+            if messages and contact_id and user_id:
+                await archive_conversation_to_messages_table(contact_id, user_id, messages)
+            else:
+                logger.warning("Missing required data for archiving")
+                
+        except Exception as e:
+            logger.error(f"Error in archiver node: {e}")
+        
+        return state
+
     async def _intent_classifier_node(self, state: SimpleState) -> SimpleState:
         """Classify the intent of the user's message."""
         logger.info("🔍 Intent Classifier Node")
@@ -1574,12 +1762,21 @@ Always double-check that dates and times make sense before proceeding.
             elif hasattr(latest_message, 'content'):
                 latest_message_content = latest_message.content
         
-        # Use the intent classifier agent with recent context for better classification
-        # Include last few messages for context (max 5 messages to ensure we capture assistant questions)
-        context_messages = state["messages"][-5:] if len(state["messages"]) > 1 else [HumanMessage(content=latest_message_content)]
+        # Prepare context with conversation summary and recent messages
+        context_messages = []
+        
+        # Add conversation summary if available
+        conversation_summary = state.get("conversation_summary")
+        if conversation_summary:
+            summary_message = SystemMessage(content=f"CONVERSATION SUMMARY: {conversation_summary}")
+            context_messages.append(summary_message)
+        
+        # Add recent messages for immediate context
+        recent_messages = state["messages"][-5:] if len(state["messages"]) > 1 else [HumanMessage(content=latest_message_content)]
+        context_messages.extend(recent_messages)
         
         # Log context for debugging
-        logger.info(f"Intent classification context ({len(context_messages)} messages):")
+        logger.info(f"Intent classification context ({len(context_messages)} messages, summary: {'Yes' if conversation_summary else 'No'}):")
         for i, msg in enumerate(context_messages):
             msg_type = type(msg).__name__
             content_preview = msg.content[:100] + "..." if len(msg.content) > 100 else msg.content
@@ -1705,9 +1902,9 @@ DO NOT ask for confirmation again if they've already confirmed the action.""")
     async def process_message(self, contact_id: str, message: str, user_id: str, 
                             user_details: Dict[str, Any] = None, access_token: str = None, 
                             refresh_token: str = None) -> Dict[str, Any]:
-        """Process an incoming message through the simplified workflow."""
+        """Process an incoming message with checkpointing and enhanced features."""
         try:
-            logger.info("🚀 Starting Simple LangGraph execution")
+            logger.info("🚀 Starting Enhanced LangGraph execution with checkpointing")
             
             # Set up calendar service if needed (only if not already set up)
             if access_token and not _calendar_service:
@@ -1716,22 +1913,32 @@ DO NOT ask for confirmation again if they've already confirmed the action.""")
                 except Exception as e:
                     logger.error(f"Error setting up calendar service: {str(e)}")
             
-            # Initialize simple state with proper message types
-            initial_state = SimpleState(
-                messages=[HumanMessage(content=message)],
-                user_id=user_id,
-                contact_id=contact_id,
-                message_intent=None,
-                metadata={
-                    "user_details": user_details,
-                    "access_token": access_token is not None,
-                    "refresh_token": refresh_token is not None,
-                    "timestamp": datetime.now().isoformat()
-                }
-            )
+            # Create thread ID for checkpointing (unique per contact)
+            thread_id = f"athena_{user_id}_{contact_id}"
             
-            # Execute the graph
-            final_state = await self.graph.ainvoke(initial_state)
+            # Initialize state with new message
+            new_message = HumanMessage(content=message)
+            
+            # Get the compiled graph with checkpointing
+            graph = await self._create_graph()
+            
+            # Execute with checkpointing - this will automatically load previous state
+            final_state = await graph.ainvoke(
+                {
+                    "messages": [new_message],
+                    "user_id": user_id,
+                    "contact_id": contact_id,
+                    "message_intent": None,
+                    "conversation_summary": None,  # Will be loaded from checkpoint if exists
+                    "metadata": {
+                        "user_details": user_details,
+                        "access_token": access_token is not None,
+                        "refresh_token": refresh_token is not None,
+                        "timestamp": datetime.now().isoformat()
+                    }
+                },
+                config={"configurable": {"thread_id": thread_id}}
+            )
             
             # Extract response from the last AI message
             messages = final_state.get("messages", [])
@@ -1739,9 +1946,9 @@ DO NOT ask for confirmation again if they've already confirmed the action.""")
             
             if messages:
                 # Find the last AI message
-                for message in reversed(messages):
-                    if isinstance(message, AIMessage):
-                        response = message.content
+                for msg in reversed(messages):
+                    if isinstance(msg, AIMessage):
+                        response = msg.content
                         break
             
             return {
@@ -1750,14 +1957,18 @@ DO NOT ask for confirmation again if they've already confirmed the action.""")
                 "intent": final_state.get("message_intent", "unknown"),
                 "user_id": user_id,
                 "contact_id": contact_id,
+                "thread_id": thread_id,
                 "extracted_info": {
-                    "simplified_agent": True,
-                    "message_count": len(messages)
+                    "enhanced_agent": True,
+                    "message_count": len(messages),
+                    "checkpointing_enabled": True,
+                    "has_summary": bool(final_state.get("conversation_summary")),
+                    "summary_length": len(final_state.get("conversation_summary", ""))
                 }
             }
             
         except Exception as e:
-            logger.error(f"Error in Simple LangGraph execution: {str(e)}")
+            logger.error(f"Error in Enhanced LangGraph execution: {str(e)}")
             return {
                 "response": "I apologize, but I encountered an error processing your request.",
                 "tools_used": [],
@@ -1765,6 +1976,72 @@ DO NOT ask for confirmation again if they've already confirmed the action.""")
                 "user_id": user_id,
                 "contact_id": contact_id,
                 "extracted_info": None
+            }
+    
+    async def clear_conversation_history(self, user_id: str, contact_id: str) -> Dict[str, Any]:
+        """Clear conversation history for a specific contact."""
+        try:
+            thread_id = f"athena_{user_id}_{contact_id}"
+            graph = await self._create_graph()
+            
+            # Clear the checkpoint by creating a new empty state
+            await graph.ainvoke(
+                {
+                    "messages": [],
+                    "user_id": user_id,
+                    "contact_id": contact_id,
+                    "message_intent": None,
+                    "conversation_summary": None,
+                    "metadata": {"cleared_at": datetime.now().isoformat()}
+                },
+                config={"configurable": {"thread_id": thread_id}}
+            )
+            
+            logger.info(f"Cleared conversation history for thread {thread_id}")
+            return {
+                "status": "success",
+                "message": f"Conversation history cleared for contact {contact_id}",
+                "thread_id": thread_id
+            }
+        except Exception as e:
+            logger.error(f"Error clearing conversation history: {e}")
+            return {
+                "status": "error",
+                "message": f"Failed to clear conversation history: {str(e)}"
+            }
+
+    async def get_conversation_summary(self, user_id: str, contact_id: str) -> Dict[str, Any]:
+        """Get conversation summary for a specific contact."""
+        try:
+            thread_id = f"athena_{user_id}_{contact_id}"
+            graph = await self._create_graph()
+            
+            # Get the current state
+            state = await graph.aget_state({"configurable": {"thread_id": thread_id}})
+            
+            if state and state.values:
+                conversation_summary = state.values.get("conversation_summary")
+                messages = state.values.get("messages", [])
+                return {
+                    "status": "success",
+                    "thread_id": thread_id,
+                    "conversation_summary": conversation_summary,
+                    "message_count": len(messages),
+                    "has_summary": bool(conversation_summary)
+                }
+            else:
+                return {
+                    "status": "success",
+                    "thread_id": thread_id,
+                    "conversation_summary": None,
+                    "message_count": 0,
+                    "has_summary": False
+                }
+        except Exception as e:
+            logger.error(f"Error getting conversation summary: {e}")
+            return {
+                "status": "error",
+                "message": f"Failed to get conversation summary: {str(e)}"
             }
 
 # Agent factory functions
@@ -1805,12 +2082,21 @@ def reset_simple_agent():
     logger.info("Global Simple LangGraph agent instance reset")
 
 # Export graph for LangGraph Studio
-def _create_simple_studio_graph():
+async def _create_simple_studio_graph():
     """Create a compiled graph for LangGraph Studio."""
     agent = get_simple_agent()
-    return agent._create_graph()
+    return await agent._create_graph()
 
-# Export the compiled graph for LangGraph Studio
-athena_elegant_graph = _create_simple_studio_graph()
-# For backward compatibility
-# graph = athena_elegant_graph 
+# Note: For LangGraph Studio, you may need to call this async function
+# Example usage: graph = await _create_simple_studio_graph()
+# athena_elegant_graph = _create_simple_studio_graph()  # This returns a coroutine
+
+# For backward compatibility with synchronous usage, create a wrapper
+def create_studio_graph_sync():
+    """Synchronous wrapper for creating studio graph."""
+    try:
+        loop = asyncio.get_event_loop()
+        return loop.run_until_complete(_create_simple_studio_graph())
+    except RuntimeError:
+        # If no event loop is running, create one
+        return asyncio.run(_create_simple_studio_graph()) 

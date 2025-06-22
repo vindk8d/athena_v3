@@ -1253,9 +1253,10 @@ class SimpleSupabaseCheckpointer:
     Avoids complex serialization and focuses on reliability.
     """
     
-    def __init__(self):
+    def __init__(self, debug_mode: bool = False):
         """Initialize the simple Supabase checkpointer."""
         self.supabase = None
+        self.debug_mode = debug_mode
         self._initialize_client()
     
     def _initialize_client(self):
@@ -1563,13 +1564,26 @@ class SimpleSupabaseCheckpointer:
                 return config
             
             # Extract and simplify the checkpoint data with comprehensive error handling
+            if self.debug_mode:
+                logger.info(f"DEBUG: Checkpoint keys: {list(checkpoint.keys())}")
+                channel_values = checkpoint.get("channel_values", {})
+                logger.info(f"DEBUG: Channel values keys: {list(channel_values.keys())}")
+                messages = channel_values.get("messages", [])
+                logger.info(f"DEBUG: Found {len(messages)} messages to serialize")
+                for i, msg in enumerate(messages[:3]):  # Log first 3 messages
+                    logger.info(f"DEBUG: Message {i}: {type(msg).__name__}")
+            
             simple_state = self._extract_simple_state(checkpoint)
             
             # Double-check that simple_state is JSON serializable
             try:
                 json.dumps(simple_state)
+                if self.debug_mode:
+                    logger.info(f"DEBUG: Simple state JSON serialization successful")
             except (TypeError, ValueError) as e:
                 logger.error(f"Simple state still not JSON serializable: {e}")
+                if self.debug_mode:
+                    logger.error(f"DEBUG: Problematic simple_state keys: {list(simple_state.keys())}")
                 # Create a minimal safe state
                 simple_state = {
                     "messages": [],
@@ -1823,8 +1837,8 @@ async def create_checkpoint_saver():
         if supabase_url and supabase_key:
             logger.info("Creating simplified Supabase checkpointer")
             
-            # Try to create the simplified checkpointer
-            checkpointer = SimpleSupabaseCheckpointer()
+            # Try to create the simplified checkpointer with debug mode enabled temporarily
+            checkpointer = SimpleSupabaseCheckpointer(debug_mode=True)
             
             if checkpointer.supabase:
                 logger.info("Simplified Supabase checkpoint saver initialized successfully")

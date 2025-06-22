@@ -1,4 +1,4 @@
-from typing import Dict, Any, List, Optional, Literal, TypedDict, Annotated
+from typing import Dict, Any, List, Optional, Literal, TypedDict, Annotated, Union
 from langchain_openai import ChatOpenAI
 from langchain.schema import HumanMessage, AIMessage, SystemMessage, BaseMessage
 from langchain.tools import tool
@@ -10,7 +10,7 @@ from langgraph.graph.message import add_messages
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.checkpoint.base import BaseCheckpointSaver
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import pytz
 import json
 import os
@@ -23,6 +23,10 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from google.auth.transport.requests import Request
 from supabase import create_client, Client
+import pickle
+import base64
+import traceback
+from google_auth_oauthlib.flow import Flow
 
 from config import Config
 
@@ -1130,6 +1134,39 @@ class SupabaseCheckpointer:
             logger.error(f"Failed to initialize Supabase client for checkpointing: {e}")
             self.supabase = None
     
+    def _serialize_data(self, data: Any) -> str:
+        """Serialize data using pickle and base64 encoding for safe storage."""
+        try:
+            # Use pickle to serialize the data
+            pickled_data = pickle.dumps(data)
+            # Encode as base64 for safe JSON storage
+            encoded_data = base64.b64encode(pickled_data).decode('utf-8')
+            return encoded_data
+        except Exception as e:
+            logger.error(f"Error serializing data: {e}")
+            # Fallback to JSON serialization for simple data
+            try:
+                return json.dumps(data, default=str)
+            except Exception as json_e:
+                logger.error(f"Error with JSON fallback serialization: {json_e}")
+                return json.dumps({"error": "serialization_failed", "type": str(type(data))})
+    
+    def _deserialize_data(self, encoded_data: str) -> Any:
+        """Deserialize data from base64 encoded pickle."""
+        try:
+            # First try to decode as base64 and unpickle
+            pickled_data = base64.b64decode(encoded_data.encode('utf-8'))
+            data = pickle.loads(pickled_data)
+            return data
+        except Exception as e:
+            logger.debug(f"Pickle deserialization failed, trying JSON: {e}")
+            # Fallback to JSON deserialization
+            try:
+                return json.loads(encoded_data)
+            except Exception as json_e:
+                logger.error(f"Error deserializing data: {json_e}")
+                return {}
+    
     async def aget_tuple(self, config: dict) -> Optional[tuple]:
         """Get checkpoint tuple for a given config."""
         try:
@@ -1147,8 +1184,16 @@ class SupabaseCheckpointer:
                 return None
             
             checkpoint_data = response.data[0]
+            
+            # Deserialize the checkpoint data
+            serialized_checkpoint = checkpoint_data.get('checkpoint_data')
+            if isinstance(serialized_checkpoint, str):
+                deserialized_checkpoint = self._deserialize_data(serialized_checkpoint)
+            else:
+                deserialized_checkpoint = serialized_checkpoint
+            
             return (
-                checkpoint_data.get('checkpoint_data'),
+                deserialized_checkpoint,
                 checkpoint_data.get('metadata', {}),
                 checkpoint_data.get('parent_config'),
                 checkpoint_data.get('pending_writes', [])
@@ -1209,10 +1254,13 @@ class SupabaseCheckpointer:
             if not thread_id:
                 return config
             
+            # Serialize the checkpoint data
+            serialized_checkpoint = self._serialize_data(checkpoint)
+            
             # Create checkpoint record
             checkpoint_record = {
                 'thread_id': thread_id,
-                'checkpoint_data': checkpoint,
+                'checkpoint_data': serialized_checkpoint,
                 'metadata': metadata,
                 'parent_config': config,
                 'pending_writes': new_versions.get('pending_writes', []),
@@ -1233,6 +1281,8 @@ class SupabaseCheckpointer:
             
         except Exception as e:
             logger.error(f"Error saving checkpoint: {e}")
+            logger.error(f"Checkpoint data type: {type(checkpoint)}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return config
     
     async def aput_writes(self, config: dict, writes: list, task_id: str) -> None:
@@ -1245,26 +1295,20 @@ class SupabaseCheckpointer:
             if not thread_id:
                 return
             
-            # Store writes in a separate table or as part of the checkpoint data
-            # For now, we'll store them as metadata in the checkpoint table
-            writes_record = {
-                'thread_id': thread_id,
-                'task_id': task_id,
-                'writes': writes,
-                'created_at': datetime.now().isoformat()
-            }
+            # Serialize the writes data
+            serialized_writes = self._serialize_data(writes)
             
             # Store as metadata for now - you may want to create a separate table for writes
             checkpoint_record = {
                 'thread_id': thread_id,
-                'checkpoint_data': {},
+                'checkpoint_data': self._serialize_data({}),
                 'metadata': {
                     'type': 'writes',
                     'task_id': task_id,
-                    'writes': writes
+                    'writes': serialized_writes
                 },
                 'parent_config': config,
-                'pending_writes': writes,
+                'pending_writes': serialized_writes,
                 'created_at': datetime.now().isoformat()
             }
             
@@ -1273,6 +1317,8 @@ class SupabaseCheckpointer:
             
         except Exception as e:
             logger.error(f"Error saving writes: {e}")
+            logger.error(f"Writes data type: {type(writes)}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
     
     def put_writes(self, config: dict, writes: list, task_id: str) -> None:
         """Sync version of put_writes."""
@@ -1299,9 +1345,16 @@ class SupabaseCheckpointer:
             
             checkpoints = []
             for item in response.data:
+                # Deserialize checkpoint data
+                serialized_checkpoint = item.get('checkpoint_data')
+                if isinstance(serialized_checkpoint, str):
+                    deserialized_checkpoint = self._deserialize_data(serialized_checkpoint)
+                else:
+                    deserialized_checkpoint = serialized_checkpoint
+                
                 checkpoints.append({
                     'config': item.get('parent_config', config),
-                    'checkpoint': item.get('checkpoint_data'),
+                    'checkpoint': deserialized_checkpoint,
                     'metadata': item.get('metadata', {}),
                     'parent_config': item.get('parent_config'),
                     'pending_writes': item.get('pending_writes', [])

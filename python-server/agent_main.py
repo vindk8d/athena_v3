@@ -1348,8 +1348,8 @@ class SimpleSupabaseCheckpointer:
             "metadata": simple_state.get("metadata", {})
         }
         
-        # Generate versions for each channel
-        channel_versions = {}
+        # Generate versions for each channel using defaultdict(int) to match LangGraph expectations
+        channel_versions = defaultdict(int)
         for channel_name, value in channel_values.items():
             if value is not None:
                 channel_versions[channel_name] = 1
@@ -1518,9 +1518,16 @@ class SimpleSupabaseCheckpointer:
         except Exception:
             return asyncio.run(self.aput(config, checkpoint, metadata, new_versions))
     
-    def get_next_version(self, current: Optional[str], channel: str) -> str:
-        """Generate next version identifier."""
-        return str(uuid.uuid4())
+    def get_next_version(self, current: Optional[str], channel: str) -> int:
+        """Generate next version identifier as integer."""
+        if current is None:
+            return 1
+        try:
+            # If current is already an integer, increment it
+            return int(current) + 1
+        except (ValueError, TypeError):
+            # If current is not a valid integer, start from 1
+            return 1
     
     async def aput_writes(self, config: dict, writes: list, task_id: str) -> None:
         """Store intermediate writes - simplified to just log for now."""

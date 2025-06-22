@@ -34,198 +34,6 @@ _llm_instance = None
 SUMMARY_THRESHOLD = 10  # Summarize when history exceeds 10 messages
 MESSAGES_TO_RETAIN = 6  # Always keep the last 6 messages as-is
 
-# # --- Helper functions copied from tools.py for tool self-containment ---
-# async def parse_time_with_llm(time_reference: str, timezone: str = "UTC", base_datetime: datetime = None) -> tuple:
-#     """Parse time references using LLM for more robust natural language understanding."""
-#     try:
-#         if base_datetime is None:
-#             base_datetime = datetime.now(pytz.timezone(timezone))
-#         if base_datetime.tzinfo is None:
-#             base_datetime = pytz.timezone(timezone).localize(base_datetime)
-        
-#         # Get LLM instance
-#         llm = get_llm_instance()
-#         if not llm:
-#             logger.warning("LLM instance not available, falling back to basic parsing")
-#             return _fallback_time_parsing(time_reference, timezone, base_datetime)
-        
-#         # Create a prompt for time parsing
-#         time_parsing_prompt = f"""You are a time parsing expert. Convert the given time reference to exact start and end times.
-
-# Current time: {base_datetime.strftime('%Y-%m-%d %H:%M:%S %Z')}
-# Timezone: {timezone}
-# Time reference: "{time_reference}"
-
-# Rules:
-# 1. Convert relative references like "tomorrow", "next week", "monday" to actual dates
-# 2. For specific times like "10 AM", "2:30 PM", use the exact time
-# 3. For time periods like "morning", "afternoon", use reasonable defaults (9 AM-12 PM for morning, 2 PM-5 PM for afternoon)
-# 4. For single time points, create a 30-minute slot
-# 5. For date-only references, use 8 AM-6 PM as default business hours
-# 6. Always return times in the specified timezone
-
-# Return ONLY a JSON object with this exact format:
-# {{
-#     "start_time": "YYYY-MM-DDTHH:MM:SS+HH:MM",
-#     "end_time": "YYYY-MM-DDTHH:MM:SS+HH:MM",
-#     "explanation": "Brief explanation of the conversion"
-# }}
-
-# Examples:
-# - "tomorrow at 10 AM" → {{"start_time": "2024-01-16T10:00:00+08:00", "end_time": "2024-01-16T10:30:00+08:00", "explanation": "Tomorrow at 10 AM for 30 minutes"}}
-# - "next monday" → {{"start_time": "2024-01-22T08:00:00+08:00", "end_time": "2024-01-22T18:00:00+08:00", "explanation": "Next Monday business hours"}}
-# - "2 PM" → {{"start_time": "2024-01-15T14:00:00+08:00", "end_time": "2024-01-15T14:30:00+08:00", "explanation": "Today at 2 PM for 30 minutes"}}
-
-# JSON response:"""
-
-#         try:
-#             # Use the LLM to parse the time
-#             response = await llm.ainvoke([HumanMessage(content=time_parsing_prompt)])
-#             response_text = response.content.strip()
-            
-#             # Extract JSON from the response
-#             json_start = response_text.find('{')
-#             json_end = response_text.rfind('}') + 1
-#             if json_start != -1 and json_end > json_start:
-#                 json_str = response_text[json_start:json_end]
-#                 parsed = json.loads(json_str)
-                
-#                 # Convert string times to datetime objects
-#                 start_time = datetime.fromisoformat(parsed['start_time'].replace('Z', '+00:00'))
-#                 end_time = datetime.fromisoformat(parsed['end_time'].replace('Z', '+00:00'))
-                
-#                 logger.info(f"LLM parsed '{time_reference}' to: {start_time.isoformat()} - {end_time.isoformat()}")
-#                 return start_time, end_time
-#             else:
-#                 logger.warning(f"Could not extract JSON from LLM response: {response_text}")
-#                 return _fallback_time_parsing(time_reference, timezone, base_datetime)
-                
-#         except Exception as e:
-#             logger.error(f"LLM time parsing failed: {e}")
-#             return _fallback_time_parsing(time_reference, timezone, base_datetime)
-            
-#     except Exception as e:
-#         logger.error(f"Error in parse_time_with_llm: {e}")
-#         return _fallback_time_parsing(time_reference, timezone, base_datetime)
-
-# def _fallback_time_parsing(time_ref: str, timezone: str = "UTC", base_datetime: datetime = None) -> tuple:
-#     """Fallback time parsing for when LLM is not available."""
-#     try:
-#         if base_datetime is None:
-#             base_datetime = datetime.now(pytz.timezone(timezone))
-#         if base_datetime.tzinfo is None:
-#             base_datetime = pytz.timezone(timezone).localize(base_datetime)
-        
-#         time_ref_lower = time_ref.lower().strip()
-        
-#         # Simple fallback logic
-#         if 'tomorrow' in time_ref_lower:
-#             target_date = base_datetime + timedelta(days=1)
-#         elif 'next week' in time_ref_lower:
-#             days_ahead = 7 - base_datetime.weekday()
-#             if days_ahead <= 0:
-#                 days_ahead += 7
-#             target_date = base_datetime + timedelta(days=days_ahead)
-#         elif 'monday' in time_ref_lower:
-#             days_ahead = 0 - base_datetime.weekday()  # Monday is 0
-#             if days_ahead <= 0:
-#                 days_ahead += 7
-#             target_date = base_datetime + timedelta(days=days_ahead)
-#         elif 'tuesday' in time_ref_lower:
-#             days_ahead = 1 - base_datetime.weekday()
-#             if days_ahead <= 0:
-#                 days_ahead += 7
-#             target_date = base_datetime + timedelta(days=days_ahead)
-#         elif 'wednesday' in time_ref_lower:
-#             days_ahead = 2 - base_datetime.weekday()
-#             if days_ahead <= 0:
-#                 days_ahead += 7
-#             target_date = base_datetime + timedelta(days=days_ahead)
-#         elif 'thursday' in time_ref_lower:
-#             days_ahead = 3 - base_datetime.weekday()
-#             if days_ahead <= 0:
-#                 days_ahead += 7
-#             target_date = base_datetime + timedelta(days=days_ahead)
-#         elif 'friday' in time_ref_lower:
-#             days_ahead = 4 - base_datetime.weekday()
-#             if days_ahead <= 0:
-#                 days_ahead += 7
-#             target_date = base_datetime + timedelta(days=days_ahead)
-#         else:
-#             target_date = base_datetime
-        
-#         # Extract time if present
-#         hour = 8  # Default to 8 AM
-#         minute = 0
-        
-#         # Simple time extraction
-#         if '10 am' in time_ref_lower or '10:00 am' in time_ref_lower:
-#             hour, minute = 10, 0
-#         elif '11 am' in time_ref_lower or '11:00 am' in time_ref_lower:
-#             hour, minute = 11, 0
-#         elif '12 pm' in time_ref_lower or '12:00 pm' in time_ref_lower or 'noon' in time_ref_lower:
-#             hour, minute = 12, 0
-#         elif '1 pm' in time_ref_lower or '1:00 pm' in time_ref_lower or '13:00' in time_ref_lower:
-#             hour, minute = 13, 0
-#         elif '2 pm' in time_ref_lower or '2:00 pm' in time_ref_lower or '14:00' in time_ref_lower:
-#             hour, minute = 14, 0
-#         elif '3 pm' in time_ref_lower or '3:00 pm' in time_ref_lower or '15:00' in time_ref_lower:
-#             hour, minute = 15, 0
-#         elif '4 pm' in time_ref_lower or '4:00 pm' in time_ref_lower or '16:00' in time_ref_lower:
-#             hour, minute = 16, 0
-#         elif '5 pm' in time_ref_lower or '5:00 pm' in time_ref_lower or '17:00' in time_ref_lower:
-#             hour, minute = 17, 0
-#         elif '6 pm' in time_ref_lower or '6:00 pm' in time_ref_lower or '18:00' in time_ref_lower:
-#             hour, minute = 18, 0
-#         elif '9 am' in time_ref_lower or '9:00 am' in time_ref_lower:
-#             hour, minute = 9, 0
-#         elif '8 am' in time_ref_lower or '8:00 am' in time_ref_lower:
-#             hour, minute = 8, 0
-        
-#         start_time = target_date.replace(hour=hour, minute=minute, second=0, microsecond=0)
-#         end_time = start_time + timedelta(minutes=30)
-        
-#         logger.info(f"Fallback parsed '{time_ref}' to: {start_time.isoformat()} - {end_time.isoformat()}")
-#         return start_time, end_time
-        
-#     except Exception as e:
-#         logger.error(f"Fallback time parsing failed: {e}")
-#         # Ultimate fallback
-#         fallback_start = base_datetime.replace(hour=8, minute=0, second=0, microsecond=0)
-#         fallback_end = fallback_start + timedelta(minutes=30)
-#         return fallback_start, fallback_end
-
-# async def parse_relative_time_reference(time_ref: str, user_timezone: str = "UTC", base_datetime: datetime = None) -> tuple:
-#     """Parse relative time references like 'tomorrow', 'next week', etc. into datetime ranges.
-    
-#     This function now uses LLM-based parsing for robust natural language understanding.
-#     For backward compatibility, this is an async function that delegates to parse_time_with_llm.
-#     """
-#     try:
-#         return await parse_time_with_llm(time_ref, user_timezone, base_datetime)
-#     except Exception as e:
-#         logger.error(f"Error in parse_relative_time_reference for '{time_ref}': {e}")
-#         # Fallback to the old function for maximum compatibility
-#         return _fallback_time_parsing(time_ref, user_timezone, base_datetime)
-
-# async def parse_specific_time_from_query(query: str, temporal_reference: str, user_timezone: str, base_datetime: datetime) -> tuple:
-#     """Parse specific time from query when in specific_slot_inquiry mode.
-    
-#     This function now uses LLM-based parsing for robust natural language understanding.
-#     It combines the temporal reference with the specific time query for intelligent parsing.
-#     """
-#     try:
-#         # Combine the temporal reference with the specific time query
-#         combined_time_ref = f"{temporal_reference} at {query}"
-        
-#         # Use the new LLM-based time parsing function
-#         return await parse_time_with_llm(combined_time_ref, user_timezone, base_datetime)
-        
-#     except Exception as e:
-#         logger.error(f"Error parsing specific time from query '{query}': {e}")
-#         # Fallback to the temporal reference only
-#         return await parse_relative_time_reference(temporal_reference, user_timezone, base_datetime)
-
 def find_available_slots(busy_times: List[Dict], start_datetime: datetime, end_datetime: datetime, slot_duration_minutes: int = 30) -> List[Dict[str, str]]:
     """Find available time slots within a time range, avoiding busy periods."""
     try:
@@ -1292,24 +1100,20 @@ Return ONLY a JSON object with this exact format:
 # Bundle tools
 tools = [check_availability_tool, create_event_tool, get_events_tool, get_current_time_tool, 
          list_calendars_tool, modify_event_tool, delete_event_tool, find_available_slots_tool, 
-         get_available_slots_for_period_tool]  # Removed convert_relative_time_tool and parse_specific_time_tool
-
-# Checkpoint configuration using Supabase REST API
-# 
-# NEW ARCHITECTURE BENEFITS:
-# ✅ Uses Supabase REST API (same as rest of the application)
-# ✅ No complex PostgreSQL connection management
-# ✅ Consistent error handling and logging
-# ✅ Proper RLS (Row Level Security) support
-# ✅ Automatic cleanup of old checkpoints
-# ✅ Better performance with proper indexing
-# ✅ More reliable than direct PostgreSQL connections
+         get_available_slots_for_period_tool]
 
 class SupabaseCheckpointer:
     """Custom checkpointer that uses Supabase REST API for state persistence.
     
     This replaces the problematic PostgreSQL direct connection approach with a clean,
     REST API-based solution that's consistent with the rest of the application.
+    
+    Implements the BaseCheckpointSaver interface with the following required methods:
+    - get_tuple, aget_tuple: Get checkpoint tuple for a given config
+    - list, alist: List checkpoints for a thread
+    - put, aput: Save checkpoint data
+    - put_writes, aput_writes: Store intermediate writes linked to a checkpoint
+    - delete_thread, adelete_thread: Delete all checkpoints for a thread
     """
     
     def __init__(self):
@@ -1431,6 +1235,54 @@ class SupabaseCheckpointer:
             logger.error(f"Error saving checkpoint: {e}")
             return config
     
+    async def aput_writes(self, config: dict, writes: list, task_id: str) -> None:
+        """Store intermediate writes linked to a checkpoint."""
+        try:
+            if not self.supabase:
+                return
+            
+            thread_id = config.get("configurable", {}).get("thread_id")
+            if not thread_id:
+                return
+            
+            # Store writes in a separate table or as part of the checkpoint data
+            # For now, we'll store them as metadata in the checkpoint table
+            writes_record = {
+                'thread_id': thread_id,
+                'task_id': task_id,
+                'writes': writes,
+                'created_at': datetime.now().isoformat()
+            }
+            
+            # Store as metadata for now - you may want to create a separate table for writes
+            checkpoint_record = {
+                'thread_id': thread_id,
+                'checkpoint_data': {},
+                'metadata': {
+                    'type': 'writes',
+                    'task_id': task_id,
+                    'writes': writes
+                },
+                'parent_config': config,
+                'pending_writes': writes,
+                'created_at': datetime.now().isoformat()
+            }
+            
+            self.supabase.table('langgraph_checkpoints').insert(checkpoint_record).execute()
+            logger.debug(f"Saved writes for thread {thread_id}, task {task_id}")
+            
+        except Exception as e:
+            logger.error(f"Error saving writes: {e}")
+    
+    def put_writes(self, config: dict, writes: list, task_id: str) -> None:
+        """Sync version of put_writes."""
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+            return loop.run_until_complete(self.aput_writes(config, writes, task_id))
+        except Exception:
+            return asyncio.run(self.aput_writes(config, writes, task_id))
+    
     async def alist(self, config: dict, limit: int = 10, before: dict = None) -> list:
         """List checkpoints for a thread."""
         try:
@@ -1469,6 +1321,32 @@ class SupabaseCheckpointer:
             return loop.run_until_complete(self.alist(config, limit, before))
         except Exception:
             return asyncio.run(self.alist(config, limit, before))
+    
+    async def adelete_thread(self, thread_id: str) -> None:
+        """Delete all checkpoints and writes associated with a specific thread ID."""
+        try:
+            if not self.supabase:
+                return
+            
+            # Delete all checkpoints for this thread
+            response = self.supabase.table('langgraph_checkpoints').delete().eq('thread_id', thread_id).execute()
+            
+            if response.data:
+                logger.info(f"Deleted {len(response.data)} checkpoints for thread {thread_id}")
+            else:
+                logger.debug(f"No checkpoints found for thread {thread_id}")
+            
+        except Exception as e:
+            logger.error(f"Error deleting thread {thread_id}: {e}")
+    
+    def delete_thread(self, thread_id: str) -> None:
+        """Sync version of delete_thread."""
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+            return loop.run_until_complete(self.adelete_thread(thread_id))
+        except Exception:
+            return asyncio.run(self.adelete_thread(thread_id))
     
     async def cleanup_old_checkpoints(self, thread_id: str, keep_latest: int = 5):
         """Clean up old checkpoints for a thread, keeping only the latest N."""

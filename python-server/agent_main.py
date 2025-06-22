@@ -25,6 +25,8 @@ from google.auth.transport.requests import Request
 from supabase import create_client, Client
 # Removed complex serialization imports - now using simple JSON serialization
 from google_auth_oauthlib.flow import Flow
+import pickle
+import base64
 
 from config import Config
 
@@ -1309,19 +1311,23 @@ class SimpleSupabaseCheckpointer:
             "contact_id": channel_values.get("contact_id"),
             "message_intent": channel_values.get("message_intent"),
             "metadata": channel_values.get("metadata", {}),
-            "timestamp": checkpoint.get("ts", datetime.now().isoformat())
+            "timestamp": checkpoint.get("ts", datetime.now().isoformat()),
+            "checkpoint_id": checkpoint.get("id"),
+            "version": checkpoint.get("v", 1)
         }
     
     def _reconstruct_checkpoint(self, simple_state: dict) -> dict:
-        """Reconstruct a full checkpoint from simple state data."""
+        """Reconstruct a full LangGraph-compatible checkpoint from simple state data."""
         if not simple_state:
             from collections import defaultdict
             return {
                 "v": 1,
+                "id": str(uuid.uuid4()),
                 "ts": datetime.now().isoformat(),
                 "channel_values": {},
                 "channel_versions": defaultdict(int),
-                "versions_seen": defaultdict(lambda: defaultdict(int))
+                "versions_seen": defaultdict(lambda: defaultdict(int)),
+                "pending_sends": []
             }
         
         # Reconstruct messages
@@ -1342,12 +1348,20 @@ class SimpleSupabaseCheckpointer:
             "metadata": simple_state.get("metadata", {})
         }
         
+        # Generate versions for each channel
+        channel_versions = {}
+        for channel_name, value in channel_values.items():
+            if value is not None:
+                channel_versions[channel_name] = 1
+        
         return {
-            "v": 1,
+            "v": simple_state.get("version", 1),
+            "id": simple_state.get("checkpoint_id", str(uuid.uuid4())),
             "ts": simple_state.get("timestamp", datetime.now().isoformat()),
             "channel_values": channel_values,
-            "channel_versions": defaultdict(int),
-            "versions_seen": defaultdict(lambda: defaultdict(int))
+            "channel_versions": channel_versions,
+            "versions_seen": defaultdict(lambda: defaultdict(int)),
+            "pending_sends": []  # Critical field that was missing
         }
     
     async def aget_tuple(self, config: dict) -> Optional[CheckpointTuple]:
@@ -1380,11 +1394,36 @@ class SimpleSupabaseCheckpointer:
             # Reconstruct the full checkpoint
             reconstructed_checkpoint = self._reconstruct_checkpoint(simple_state)
             
+            # Create proper metadata with required fields
+            metadata = checkpoint_data.get('metadata', {})
+            if isinstance(metadata, str):
+                try:
+                    metadata = json.loads(metadata) if metadata.strip() else {}
+                except json.JSONDecodeError:
+                    metadata = {}
+            
+            # Ensure metadata has required fields
+            metadata.setdefault('step', metadata.get('step', 0))
+            metadata.setdefault('source', 'loop')
+            metadata.setdefault('writes', None)
+            metadata.setdefault('parents', {})
+            
+            # Create parent config if needed
+            parent_config = None
+            if metadata.get('parents'):
+                parent_config = {
+                    "configurable": {
+                        "thread_id": thread_id,
+                        "checkpoint_id": list(metadata['parents'].values())[0] if metadata['parents'] else None
+                    }
+                }
+            
             # Return a proper CheckpointTuple object
             return CheckpointTuple(
-                config,
-                reconstructed_checkpoint,
-                config  # Use config as parent_config for simplicity
+                config=config,
+                checkpoint=reconstructed_checkpoint,
+                metadata=metadata,
+                parent_config=parent_config
             )
             
         except Exception as e:
@@ -1427,7 +1466,7 @@ class SimpleSupabaseCheckpointer:
             # Extract and simplify the checkpoint data
             simple_state = self._extract_simple_state(checkpoint)
             
-            # Ensure metadata is serializable
+            # Ensure metadata is serializable and has required fields
             safe_metadata = {}
             if metadata:
                 for key, value in metadata.items():
@@ -1436,6 +1475,12 @@ class SimpleSupabaseCheckpointer:
                         safe_metadata[key] = value
                     except (TypeError, ValueError):
                         safe_metadata[key] = str(value)  # Convert to string if not serializable
+            
+            # Ensure required metadata fields exist
+            safe_metadata.setdefault('step', safe_metadata.get('step', 0))
+            safe_metadata.setdefault('source', 'loop')
+            safe_metadata.setdefault('writes', None)
+            safe_metadata.setdefault('parents', {})
             
             # Create checkpoint record with simple JSON data
             checkpoint_record = {
@@ -1517,10 +1562,25 @@ class SimpleSupabaseCheckpointer:
                 
                 reconstructed_checkpoint = self._reconstruct_checkpoint(simple_state)
                 
+                # Handle metadata
+                metadata = item.get('metadata', {})
+                if isinstance(metadata, str):
+                    try:
+                        metadata = json.loads(metadata) if metadata.strip() else {}
+                    except json.JSONDecodeError:
+                        metadata = {}
+                
+                # Ensure metadata has required fields
+                metadata.setdefault('step', 0)
+                metadata.setdefault('source', 'loop')
+                metadata.setdefault('writes', None)
+                metadata.setdefault('parents', {})
+                
                 yield CheckpointTuple(
-                    config,
-                    reconstructed_checkpoint,
-                    config
+                    config=config,
+                    checkpoint=reconstructed_checkpoint,
+                    metadata=metadata,
+                    parent_config=config
                 )
             
         except Exception as e:

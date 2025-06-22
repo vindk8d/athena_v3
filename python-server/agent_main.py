@@ -1265,11 +1265,11 @@ class SupabaseCheckpointer:
             else:
                 deserialized_parent_config = serialized_parent_config
             
-            # Return a proper CheckpointTuple object
+            # Return a proper CheckpointTuple object using positional arguments
             return CheckpointTuple(
-                config=config,
-                checkpoint=deserialized_checkpoint,
-                parent_config=deserialized_parent_config
+                config,
+                deserialized_checkpoint,
+                deserialized_parent_config
             )
             
         except Exception as e:
@@ -1289,7 +1289,7 @@ class SupabaseCheckpointer:
     async def aget(self, config: dict) -> Optional[Any]:
         """Get checkpoint for a given config."""
         result = await self.aget_tuple(config)
-        return result[0] if result else None
+        return result.checkpoint if result else None
     
     def get(self, config: dict) -> Optional[Any]:
         """Sync version of get."""
@@ -1442,11 +1442,11 @@ class SupabaseCheckpointer:
                 else:
                     deserialized_parent_config = serialized_parent_config
                 
-                # Yield CheckpointTuple objects
+                # Yield CheckpointTuple objects using positional arguments
                 yield CheckpointTuple(
-                    config=deserialized_parent_config or config,
-                    checkpoint=deserialized_checkpoint,
-                    parent_config=deserialized_parent_config
+                    deserialized_parent_config or config,
+                    deserialized_checkpoint,
+                    deserialized_parent_config
                 )
             
         except Exception as e:

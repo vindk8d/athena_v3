@@ -1910,9 +1910,9 @@ DO NOT ask for confirmation again if they've already confirmed the action.""")
     async def process_message(self, contact_id: str, message: str, user_id: str, 
                             user_details: Dict[str, Any] = None, access_token: str = None, 
                             refresh_token: str = None) -> Dict[str, Any]:
-        """Process an incoming message with checkpointing and enhanced features."""
+        """Process an incoming message with LangGraph's built-in checkpointing."""
         try:
-            logger.info("🚀 Starting Enhanced LangGraph execution with checkpointing")
+            logger.info("🚀 Starting Enhanced LangGraph execution with built-in checkpointing")
             
             # Set up calendar service if needed (only if not already set up)
             if access_token and not _calendar_service:
@@ -1924,27 +1924,38 @@ DO NOT ask for confirmation again if they've already confirmed the action.""")
             # Create thread ID for checkpointing (unique per contact)
             thread_id = f"athena_{user_id}_{contact_id}"
             
-            # Initialize state with new message
-            new_message = HumanMessage(content=message)
-            
-            # Get the compiled graph with checkpointing
+            # Get the compiled graph (with or without custom checkpointer based on environment)
             graph = await self._create_graph()
             
-            # Execute with checkpointing - this will automatically load previous state
+            # Check if this is a continuing conversation by getting existing state
+            try:
+                existing_state = await graph.aget_state({"configurable": {"thread_id": thread_id}})
+                is_continuing_conversation = existing_state and existing_state.values and existing_state.values.get("messages")
+                logger.info(f"Thread {thread_id}: {'Continuing' if is_continuing_conversation else 'New'} conversation")
+            except Exception as e:
+                logger.warning(f"Could not retrieve existing state: {e}")
+                is_continuing_conversation = False
+            
+            # Prepare the input state
+            # For continuing conversations, LangGraph will automatically merge with existing state
+            input_state = {
+                "messages": [HumanMessage(content=message)],  # Only the new message
+                "user_id": user_id,
+                "contact_id": contact_id,
+                "message_intent": None,  # Will be determined by intent classifier
+                "metadata": {
+                    "user_details": user_details,
+                    "access_token": access_token is not None,
+                    "refresh_token": refresh_token is not None,
+                    "timestamp": datetime.now().isoformat(),
+                    "is_continuing_conversation": is_continuing_conversation
+                }
+            }
+            
+            # Execute with built-in checkpointing
+            # LangGraph automatically loads previous state and merges with input
             final_state = await graph.ainvoke(
-                {
-                    "messages": [new_message],
-                    "user_id": user_id,
-                    "contact_id": contact_id,
-                    "message_intent": None,
-                    "conversation_summary": None,  # Will be loaded from checkpoint if exists
-                    "metadata": {
-                        "user_details": user_details,
-                        "access_token": access_token is not None,
-                        "refresh_token": refresh_token is not None,
-                        "timestamp": datetime.now().isoformat()
-                    }
-                },
+                input_state,
                 config={"configurable": {"thread_id": thread_id}}
             )
             
@@ -1971,7 +1982,8 @@ DO NOT ask for confirmation again if they've already confirmed the action.""")
                     "message_count": len(messages),
                     "checkpointing_enabled": True,
                     "has_summary": bool(final_state.get("conversation_summary")),
-                    "summary_length": len(final_state.get("conversation_summary", ""))
+                    "summary_length": len(final_state.get("conversation_summary", "")),
+                    "is_continuing_conversation": is_continuing_conversation
                 }
             }
             
@@ -2052,6 +2064,68 @@ DO NOT ask for confirmation again if they've already confirmed the action.""")
                 "message": f"Failed to get conversation summary: {str(e)}"
             }
 
+    async def get_conversation_state(self, user_id: str, contact_id: str) -> Dict[str, Any]:
+        """Get comprehensive conversation state using LangGraph's built-in state management."""
+        try:
+            thread_id = f"athena_{user_id}_{contact_id}"
+            graph = await self._create_graph()
+            
+            # Get the current state snapshot
+            state_snapshot = await graph.aget_state({"configurable": {"thread_id": thread_id}})
+            
+            if not state_snapshot or not state_snapshot.values:
+                return {
+                    "status": "success",
+                    "thread_id": thread_id,
+                    "exists": False,
+                    "conversation_summary": None,
+                    "message_count": 0,
+                    "last_updated": None,
+                    "metadata": {}
+                }
+            
+            # Extract state information
+            values = state_snapshot.values
+            messages = values.get("messages", [])
+            conversation_summary = values.get("conversation_summary")
+            metadata = values.get("metadata", {})
+            
+            # Get state history (LangGraph's built-in versioning)
+            state_history = []
+            try:
+                # Get the last few state versions
+                async for state in graph.aget_state_history(
+                    {"configurable": {"thread_id": thread_id}}, 
+                    limit=5
+                ):
+                    state_history.append({
+                        "timestamp": state.created_at.isoformat() if state.created_at else None,
+                        "step": state.step,
+                        "next_actions": list(state.next) if state.next else [],
+                        "message_count": len(state.values.get("messages", [])) if state.values else 0
+                    })
+            except Exception as e:
+                logger.warning(f"Could not retrieve state history: {e}")
+            
+            return {
+                "status": "success",
+                "thread_id": thread_id,
+                "exists": True,
+                "conversation_summary": conversation_summary,
+                "message_count": len(messages),
+                "last_updated": state_snapshot.created_at.isoformat() if state_snapshot.created_at else None,
+                "metadata": metadata,
+                "state_history": state_history,
+                "current_step": state_snapshot.step,
+                "next_actions": list(state_snapshot.next) if state_snapshot.next else []
+            }
+        except Exception as e:
+            logger.error(f"Error getting conversation state: {e}")
+            return {
+                "status": "error",
+                "message": f"Failed to get conversation state: {str(e)}"
+            }
+
 # Agent factory functions
 def create_simple_agent(openai_api_key: str = None, model_name: str = None, temperature: float = None) -> SimpleAthenaAgent:
     """Create and return a SimpleAthenaAgent instance."""
@@ -2096,15 +2170,88 @@ async def _create_simple_studio_graph():
     # Use no checkpointer for LangGraph Studio since it handles persistence automatically
     return await agent._create_graph(use_checkpointer=False)
 
-# For backward compatibility with synchronous usage, create a wrapper
-def create_studio_graph_sync():
-    """Synchronous wrapper for creating studio graph."""
-    try:
-        loop = asyncio.get_event_loop()
-        return loop.run_until_complete(_create_simple_studio_graph())
-    except RuntimeError:
-        # If no event loop is running, create one
-        return asyncio.run(_create_simple_studio_graph())
+# For LangGraph Studio compatibility - create a graph that can be imported directly
+# But defer the actual graph creation until it's needed
+class LazyGraph:
+    """A lazy-loaded graph that creates the actual graph when first accessed."""
+    
+    def __init__(self):
+        self._graph = None
+        self._creating = False
+    
+    def _ensure_graph(self):
+        """Ensure the graph is created and return it."""
+        if self._graph is None and not self._creating:
+            self._creating = True
+            try:
+                # Create the graph synchronously if possible
+                agent = get_simple_agent()
+                # Create without checkpointer for LangGraph Studio
+                from langgraph.graph import StateGraph, END
+                from langgraph.graph.message import add_messages
+                
+                # Create the graph directly without async
+                workflow = StateGraph(SimpleState)
+                
+                # Add nodes - these are async methods so they should work fine with LangGraph
+                workflow.add_node("summarizer", agent._summarizer_node)
+                workflow.add_node("intent_classifier", agent._intent_classifier_node)
+                workflow.add_node("execution_decider", agent._execution_decider_node)
+                workflow.add_node("general_conversation", agent._general_conversation_node)
+                workflow.add_node("archiver", agent._archiver_node)
+                
+                # Set entry point to summarizer
+                workflow.set_entry_point("summarizer")
+                
+                # Connect summarizer to intent classifier
+                workflow.add_edge("summarizer", "intent_classifier")
+                
+                # Add routing from intent classifier
+                workflow.add_conditional_edges(
+                    "intent_classifier",
+                    agent._route_by_intent,
+                    {
+                        "general_conversation": "general_conversation",
+                        "clarification_answer": "execution_decider",
+                        "meeting_request": "execution_decider",
+                        "calendar_inquiry": "execution_decider", 
+                        "availability_inquiry": "execution_decider",
+                        "meeting_modification": "execution_decider",
+                        "time_question": "execution_decider"
+                    }
+                )
+                
+                # Connect both paths to archiver before END
+                workflow.add_edge("general_conversation", "archiver")
+                workflow.add_edge("execution_decider", "archiver")
+                workflow.add_edge("archiver", END)
+                
+                # Compile without checkpointer for LangGraph Studio
+                self._graph = workflow.compile()
+                logger.info("Lazy graph created successfully for LangGraph Studio")
+                
+            except Exception as e:
+                logger.error(f"Error creating lazy graph: {e}")
+                # Create a minimal fallback graph
+                workflow = StateGraph(SimpleState)
+                workflow.add_node("default", lambda state: {**state, "messages": state["messages"] + [AIMessage(content="Graph creation failed")]})
+                workflow.set_entry_point("default")
+                workflow.add_edge("default", END)
+                self._graph = workflow.compile()
+            finally:
+                self._creating = False
+        
+        return self._graph
+    
+    def __getattr__(self, name):
+        """Delegate all attribute access to the underlying graph."""
+        graph = self._ensure_graph()
+        return getattr(graph, name)
+    
+    def __call__(self, *args, **kwargs):
+        """Make the lazy graph callable like the real graph."""
+        graph = self._ensure_graph()
+        return graph(*args, **kwargs)
 
-# Export the graph for LangGraph Studio
-athena_elegant_graph = create_studio_graph_sync() 
+# Create the lazy graph instance for LangGraph Studio
+athena_elegant_graph = LazyGraph() 

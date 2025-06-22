@@ -1634,8 +1634,7 @@ Always double-check that dates and times make sense before proceeding.
         # Add nodes
         workflow.add_node("summarizer", self._summarizer_node)
         workflow.add_node("intent_classifier", self._intent_classifier_node)
-        workflow.add_node("execution_decider", self._execution_decider_node)
-        workflow.add_node("general_conversation", self._general_conversation_node)
+        workflow.add_node("calendar_execution", self._calendar_execution_node)
         workflow.add_node("archiver", self._archiver_node)
         
         # Set entry point to summarizer
@@ -1644,24 +1643,11 @@ Always double-check that dates and times make sense before proceeding.
         # Connect summarizer to intent classifier
         workflow.add_edge("summarizer", "intent_classifier")
         
-        # Add routing from intent classifier
-        workflow.add_conditional_edges(
-            "intent_classifier",
-            self._route_by_intent,
-            {
-                "general_conversation": "general_conversation",
-                "clarification_answer": "execution_decider",
-                "meeting_request": "execution_decider",
-                "calendar_inquiry": "execution_decider", 
-                "availability_inquiry": "execution_decider",
-                "meeting_modification": "execution_decider",
-                "time_question": "execution_decider"
-            }
-        )
+        # Connect intent classifier directly to calendar execution (no routing needed)
+        workflow.add_edge("intent_classifier", "calendar_execution")
         
-        # Connect both paths to archiver before END
-        workflow.add_edge("general_conversation", "archiver")
-        workflow.add_edge("execution_decider", "archiver")
+        # Connect calendar execution to archiver before END
+        workflow.add_edge("calendar_execution", "archiver")
         workflow.add_edge("archiver", END)
         
         # Create checkpointer only if requested
@@ -1822,9 +1808,9 @@ New consolidated summary:"""
         
         return state
     
-    async def _execution_decider_node(self, state: SimpleState) -> SimpleState:
-        """Decide how to execute based on the message."""
-        logger.info("⚡ Execution Decider Node")
+    async def _calendar_execution_node(self, state: SimpleState) -> SimpleState:
+        """Execute calendar operations and handle all user interactions."""
+        logger.info("📅 Calendar Execution Node")
         
         # Get message intent to determine how to handle this
         message_intent = state.get("message_intent", "")
@@ -1855,6 +1841,27 @@ CONFIRMATION HANDLING:
 
 DO NOT ask for confirmation again if they've already confirmed the action.""")
             messages.insert(-1, clarification_context)  # Insert before the last user message
+        elif message_intent == "general_conversation":
+            logger.info("💬 Processing general conversation")
+            # For general conversation, use a welcoming response but also mention calendar capabilities
+            messages = state["messages"][-3:] if len(state["messages"]) > 1 else state["messages"].copy()
+            general_context = SystemMessage(content="""The user is engaging in general conversation (greetings, casual chat, etc.). 
+
+Respond warmly and professionally as Athena, the executive assistant. Always:
+- Be friendly and welcoming
+- Introduce your calendar management capabilities
+- Ask how you can help with their scheduling needs
+- Keep responses concise but helpful
+
+If this is a greeting or introduction, briefly explain what you can do:
+- Schedule meetings and appointments
+- Check calendar availability
+- Manage calendar events
+- Find available time slots
+- Handle meeting modifications
+
+Make them feel comfortable and ready to use your calendar features.""")
+            messages.insert(0, general_context)
         else:
             # For other intents, use conversation context for better information extraction
             # Include recent conversation history (max 5 messages) for context
@@ -1883,29 +1890,15 @@ DO NOT ask for confirmation again if they've already confirmed the action.""")
             }
             
         except Exception as e:
-            logger.error(f"Execution decider error: {e}")
+            logger.error(f"Calendar execution error: {e}")
             return {
                 **state,
                 "messages": state["messages"] + [AIMessage(content="I'd be happy to help you with that! Could you provide a bit more detail about what you'd like me to do?")]
             }
     
-    async def _general_conversation_node(self, state: SimpleState) -> SimpleState:
-        """Handle general conversation intent."""
-        logger.info("💬 General Conversation Node")
-        
-        response = "Hello! I'm Athena, your executive assistant. I'm here to help you manage your calendar, schedule meetings, check availability, and keep your day organized. What can I help you with today?"
-        
-        return {
-            **state,
-            "messages": state["messages"] + [AIMessage(content=response)]
-        }
+
     
-    # Routing functions
-    def _route_by_intent(self, state: SimpleState) -> str:
-        """Route based on classified intent."""
-        intent = state.get("message_intent", "general_conversation")
-        logger.info(f"Routing by intent: {intent}")
-        return intent
+    # Routing functions removed - now using direct flow
     
     async def process_message(self, contact_id: str, message: str, user_id: str, 
                             user_details: Dict[str, Any] = None, access_token: str = None, 
@@ -2170,88 +2163,54 @@ async def _create_simple_studio_graph():
     # Use no checkpointer for LangGraph Studio since it handles persistence automatically
     return await agent._create_graph(use_checkpointer=False)
 
-# For LangGraph Studio compatibility - create a graph that can be imported directly
-# But defer the actual graph creation until it's needed
-class LazyGraph:
-    """A lazy-loaded graph that creates the actual graph when first accessed."""
-    
-    def __init__(self):
-        self._graph = None
-        self._creating = False
-    
-    def _ensure_graph(self):
-        """Ensure the graph is created and return it."""
-        if self._graph is None and not self._creating:
-            self._creating = True
-            try:
-                # Create the graph synchronously if possible
-                agent = get_simple_agent()
-                # Create without checkpointer for LangGraph Studio
-                from langgraph.graph import StateGraph, END
-                from langgraph.graph.message import add_messages
-                
-                # Create the graph directly without async
-                workflow = StateGraph(SimpleState)
-                
-                # Add nodes - these are async methods so they should work fine with LangGraph
-                workflow.add_node("summarizer", agent._summarizer_node)
-                workflow.add_node("intent_classifier", agent._intent_classifier_node)
-                workflow.add_node("execution_decider", agent._execution_decider_node)
-                workflow.add_node("general_conversation", agent._general_conversation_node)
-                workflow.add_node("archiver", agent._archiver_node)
-                
-                # Set entry point to summarizer
-                workflow.set_entry_point("summarizer")
-                
-                # Connect summarizer to intent classifier
-                workflow.add_edge("summarizer", "intent_classifier")
-                
-                # Add routing from intent classifier
-                workflow.add_conditional_edges(
-                    "intent_classifier",
-                    agent._route_by_intent,
-                    {
-                        "general_conversation": "general_conversation",
-                        "clarification_answer": "execution_decider",
-                        "meeting_request": "execution_decider",
-                        "calendar_inquiry": "execution_decider", 
-                        "availability_inquiry": "execution_decider",
-                        "meeting_modification": "execution_decider",
-                        "time_question": "execution_decider"
-                    }
-                )
-                
-                # Connect both paths to archiver before END
-                workflow.add_edge("general_conversation", "archiver")
-                workflow.add_edge("execution_decider", "archiver")
-                workflow.add_edge("archiver", END)
-                
-                # Compile without checkpointer for LangGraph Studio
-                self._graph = workflow.compile()
-                logger.info("Lazy graph created successfully for LangGraph Studio")
-                
-            except Exception as e:
-                logger.error(f"Error creating lazy graph: {e}")
-                # Create a minimal fallback graph
-                workflow = StateGraph(SimpleState)
-                workflow.add_node("default", lambda state: {**state, "messages": state["messages"] + [AIMessage(content="Graph creation failed")]})
-                workflow.set_entry_point("default")
-                workflow.add_edge("default", END)
-                self._graph = workflow.compile()
-            finally:
-                self._creating = False
+# For LangGraph Studio compatibility - create a graph factory function
+def athena_elegant_graph(config=None):
+    """Graph factory function for LangGraph Studio that accepts a RunnableConfig."""
+    try:
+        logger.info("Creating graph for LangGraph Studio")
         
-        return self._graph
-    
-    def __getattr__(self, name):
-        """Delegate all attribute access to the underlying graph."""
-        graph = self._ensure_graph()
-        return getattr(graph, name)
-    
-    def __call__(self, *args, **kwargs):
-        """Make the lazy graph callable like the real graph."""
-        graph = self._ensure_graph()
-        return graph(*args, **kwargs)
-
-# Create the lazy graph instance for LangGraph Studio
-athena_elegant_graph = LazyGraph() 
+        # Create the agent
+        agent = get_simple_agent()
+        
+        # Create without checkpointer for LangGraph Studio
+        from langgraph.graph import StateGraph, END
+        from langgraph.graph.message import add_messages
+        
+        # Create the graph
+        workflow = StateGraph(SimpleState)
+        
+        # Add nodes - these are async methods so they should work fine with LangGraph
+        workflow.add_node("summarizer", agent._summarizer_node)
+        workflow.add_node("intent_classifier", agent._intent_classifier_node)
+        workflow.add_node("calendar_execution", agent._calendar_execution_node)
+        workflow.add_node("archiver", agent._archiver_node)
+        
+        # Set entry point to summarizer
+        workflow.set_entry_point("summarizer")
+        
+        # Connect summarizer to intent classifier
+        workflow.add_edge("summarizer", "intent_classifier")
+        
+        # Connect intent classifier directly to calendar execution (no routing needed)
+        workflow.add_edge("intent_classifier", "calendar_execution")
+        
+        # Connect calendar execution to archiver before END
+        workflow.add_edge("calendar_execution", "archiver")
+        workflow.add_edge("archiver", END)
+        
+        # Compile without checkpointer for LangGraph Studio
+        graph = workflow.compile()
+        logger.info("Graph created successfully for LangGraph Studio")
+        return graph
+        
+    except Exception as e:
+        logger.error(f"Error creating graph for LangGraph Studio: {e}")
+        # Create a minimal fallback graph
+        workflow = StateGraph(SimpleState)
+        workflow.add_node("error", lambda state: {
+            **state, 
+            "messages": state["messages"] + [AIMessage(content=f"Graph creation failed: {str(e)}")]
+        })
+        workflow.set_entry_point("error")
+        workflow.add_edge("error", END)
+        return workflow.compile() 

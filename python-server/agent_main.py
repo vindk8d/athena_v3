@@ -1294,37 +1294,59 @@ class SimpleSupabaseCheckpointer:
         if not checkpoint:
             return {}
         
-        # Extract messages
-        messages = checkpoint.get("messages", [])
+        # Handle LangGraph checkpoint format
+        channel_values = checkpoint.get("channel_values", {})
+        
+        # Extract messages from channel_values or direct checkpoint
+        messages = channel_values.get("messages", checkpoint.get("messages", []))
         serialized_messages = self._serialize_messages(messages) if messages else []
         
-        # Extract other essential data
+        # Extract other essential data from channel_values or direct checkpoint
         return {
             "messages": serialized_messages,
-            "conversation_summary": checkpoint.get("conversation_summary"),
-            "user_id": checkpoint.get("user_id"),
-            "contact_id": checkpoint.get("contact_id"),
-            "message_intent": checkpoint.get("message_intent"),
-            "metadata": checkpoint.get("metadata", {}),
-            "timestamp": datetime.now().isoformat()
+            "conversation_summary": channel_values.get("conversation_summary", checkpoint.get("conversation_summary")),
+            "user_id": channel_values.get("user_id", checkpoint.get("user_id")),
+            "contact_id": channel_values.get("contact_id", checkpoint.get("contact_id")),
+            "message_intent": channel_values.get("message_intent", checkpoint.get("message_intent")),
+            "metadata": channel_values.get("metadata", checkpoint.get("metadata", {})),
+            "timestamp": checkpoint.get("ts", datetime.now().isoformat())
         }
     
     def _reconstruct_checkpoint(self, simple_state: dict) -> dict:
         """Reconstruct a full checkpoint from simple state data."""
         if not simple_state:
-            return {}
+            from collections import defaultdict
+            return {
+                "v": 1,
+                "ts": datetime.now().isoformat(),
+                "channel_values": {},
+                "channel_versions": defaultdict(int),
+                "versions_seen": defaultdict(lambda: defaultdict(int))
+            }
         
         # Reconstruct messages
         serialized_messages = simple_state.get("messages", [])
         messages = self._deserialize_messages(serialized_messages)
         
-        return {
+        # Create the proper LangGraph checkpoint format
+        from collections import defaultdict
+        
+        # Map your simple state to LangGraph's expected channel structure
+        channel_values = {
             "messages": messages,
             "conversation_summary": simple_state.get("conversation_summary"),
             "user_id": simple_state.get("user_id"),
             "contact_id": simple_state.get("contact_id"),
             "message_intent": simple_state.get("message_intent"),
             "metadata": simple_state.get("metadata", {})
+        }
+        
+        return {
+            "v": 1,
+            "ts": simple_state.get("timestamp", datetime.now().isoformat()),
+            "channel_values": channel_values,
+            "channel_versions": defaultdict(int),
+            "versions_seen": defaultdict(lambda: defaultdict(int))
         }
     
     async def aget_tuple(self, config: dict) -> Optional[CheckpointTuple]:
@@ -2191,7 +2213,13 @@ Make them feel comfortable and ready to use your calendar features.""")
             # Check if this is a continuing conversation by getting existing state
             try:
                 existing_state = await graph.aget_state({"configurable": {"thread_id": thread_id}})
-                is_continuing_conversation = existing_state and existing_state.values and existing_state.values.get("messages")
+                # Check if state exists and has messages in channel_values
+                is_continuing_conversation = (
+                    existing_state and 
+                    hasattr(existing_state, 'values') and 
+                    existing_state.values and 
+                    existing_state.values.get("channel_values", {}).get("messages")
+                )
                 logger.info(f"Thread {thread_id}: {'Continuing' if is_continuing_conversation else 'New'} conversation")
             except Exception as e:
                 logger.warning(f"Could not retrieve existing state: {e}")
@@ -2300,9 +2328,10 @@ Make them feel comfortable and ready to use your calendar features.""")
             # Get the current state
             state = await graph.aget_state({"configurable": {"thread_id": thread_id}})
             
-            if state and state.values:
-                conversation_summary = state.values.get("conversation_summary")
-                messages = state.values.get("messages", [])
+            if state and hasattr(state, 'values') and state.values:
+                channel_values = state.values.get("channel_values", {})
+                conversation_summary = channel_values.get("conversation_summary")
+                messages = channel_values.get("messages", [])
                 return {
                     "status": "success",
                     "thread_id": thread_id,
@@ -2334,7 +2363,7 @@ Make them feel comfortable and ready to use your calendar features.""")
             # Get the current state snapshot
             state_snapshot = await graph.aget_state({"configurable": {"thread_id": thread_id}})
             
-            if not state_snapshot or not state_snapshot.values:
+            if not state_snapshot or not hasattr(state_snapshot, 'values') or not state_snapshot.values:
                 return {
                     "status": "success",
                     "thread_id": thread_id,
@@ -2347,9 +2376,10 @@ Make them feel comfortable and ready to use your calendar features.""")
             
             # Extract state information
             values = state_snapshot.values
-            messages = values.get("messages", [])
-            conversation_summary = values.get("conversation_summary")
-            metadata = values.get("metadata", {})
+            channel_values = values.get("channel_values", {})
+            messages = channel_values.get("messages", [])
+            conversation_summary = channel_values.get("conversation_summary")
+            metadata = channel_values.get("metadata", {})
             
             # Get state history (LangGraph's built-in versioning)
             state_history = []
@@ -2359,11 +2389,12 @@ Make them feel comfortable and ready to use your calendar features.""")
                     {"configurable": {"thread_id": thread_id}}, 
                     limit=5
                 ):
+                    state_channel_values = state.values.get("channel_values", {}) if state.values else {}
                     state_history.append({
                         "timestamp": state.created_at.isoformat() if state.created_at else None,
                         "step": state.step,
                         "next_actions": list(state.next) if state.next else [],
-                        "message_count": len(state.values.get("messages", [])) if state.values else 0
+                        "message_count": len(state_channel_values.get("messages", []))
                     })
             except Exception as e:
                 logger.warning(f"Could not retrieve state history: {e}")

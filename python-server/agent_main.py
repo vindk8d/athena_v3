@@ -8,6 +8,7 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langgraph.graph import StateGraph, END
 from langgraph.graph.message import add_messages
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.checkpoint.base import BaseCheckpointSaver
 import logging
 from datetime import datetime, timedelta
 import pytz
@@ -15,6 +16,7 @@ import json
 import os
 import re
 import asyncio
+import uuid
 from pydantic import BaseModel, Field
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
@@ -1324,7 +1326,7 @@ class SupabaseCheckpointer:
             logger.error(f"Failed to initialize Supabase client for checkpointing: {e}")
             self.supabase = None
     
-    async def aget_tuple(self, config: dict) -> tuple:
+    async def aget_tuple(self, config: dict) -> Optional[tuple]:
         """Get checkpoint tuple for a given config."""
         try:
             if not self.supabase:
@@ -1351,6 +1353,47 @@ class SupabaseCheckpointer:
         except Exception as e:
             logger.error(f"Error getting checkpoint: {e}")
             return None
+    
+    def get_tuple(self, config: dict) -> Optional[tuple]:
+        """Sync version of get_tuple."""
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+            return loop.run_until_complete(self.aget_tuple(config))
+        except Exception:
+            # If no event loop, create one
+            return asyncio.run(self.aget_tuple(config))
+    
+    async def aget(self, config: dict) -> Optional[Any]:
+        """Get checkpoint for a given config."""
+        result = await self.aget_tuple(config)
+        return result[0] if result else None
+    
+    def get(self, config: dict) -> Optional[Any]:
+        """Sync version of get."""
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+            return loop.run_until_complete(self.aget(config))
+        except Exception:
+            return asyncio.run(self.aget(config))
+    
+    def put(self, config: dict, checkpoint: dict, metadata: dict, new_versions: dict) -> dict:
+        """Sync version of put."""
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+            return loop.run_until_complete(self.aput(config, checkpoint, metadata, new_versions))
+        except Exception:
+            return asyncio.run(self.aput(config, checkpoint, metadata, new_versions))
+    
+    def get_next_version(self, current: Optional[str], channel: str) -> str:
+        """Generate next version identifier."""
+        if current is None:
+            return str(uuid.uuid4())
+        
+        # Simple versioning scheme - generate new UUID for each version
+        return str(uuid.uuid4())
     
     async def aput(self, config: dict, checkpoint: dict, metadata: dict, new_versions: dict) -> dict:
         """Save checkpoint data."""
@@ -1417,6 +1460,15 @@ class SupabaseCheckpointer:
         except Exception as e:
             logger.error(f"Error listing checkpoints: {e}")
             return []
+    
+    def list(self, config: dict, limit: int = 10, before: dict = None) -> list:
+        """Sync version of list."""
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+            return loop.run_until_complete(self.alist(config, limit, before))
+        except Exception:
+            return asyncio.run(self.alist(config, limit, before))
     
     async def cleanup_old_checkpoints(self, thread_id: str, keep_latest: int = 5):
         """Clean up old checkpoints for a thread, keeping only the latest N."""

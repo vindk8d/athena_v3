@@ -27,6 +27,19 @@ Thumbs.db
 # Misc
 *.local
 
+# Python cache and compiled files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.pytest_cache/
+
+# LangGraph generated files
+python-server/.langgraph_api/
+*.pckl
+
 # Ignore test coverage
 coverage/
 

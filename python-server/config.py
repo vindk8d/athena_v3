@@ -1,8 +1,19 @@
 import os
+from pathlib import Path
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
-load_dotenv()
+# Get the root directory (parent of python-server)
+ROOT_DIR = Path(__file__).parent.parent
+ENV_FILE = ROOT_DIR / ".env"
+
+# Load environment variables from .env file in root directory
+if ENV_FILE.exists():
+    load_dotenv(ENV_FILE)
+    print(f"✅ Loaded environment variables from: {ENV_FILE}")
+else:
+    # Fallback: try to load from current directory
+    load_dotenv()
+    print(f"⚠️  .env file not found at {ENV_FILE}, trying current directory")
 
 class Config:
     # OpenAI Configuration

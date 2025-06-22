@@ -7,7 +7,6 @@ from langchain import hub
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langgraph.graph import StateGraph, END
 from langgraph.graph.message import add_messages
-from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.checkpoint.memory import MemorySaver
 import logging
 from datetime import datetime, timedelta
@@ -22,7 +21,6 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from google.auth.transport.requests import Request
 from supabase import create_client, Client
-import psycopg
 
 from config import Config
 
@@ -1294,77 +1292,200 @@ tools = [check_availability_tool, create_event_tool, get_events_tool, get_curren
          list_calendars_tool, modify_event_tool, delete_event_tool, find_available_slots_tool, 
          get_available_slots_for_period_tool]  # Removed convert_relative_time_tool and parse_specific_time_tool
 
-# Checkpoint configuration
-# NOTE: The system currently uses MemorySaver as the default checkpointer because:
-# 1. Supabase REST API credentials cannot be used for direct PostgreSQL connections
-# 2. LangGraph's AsyncPostgresSaver requires a direct PostgreSQL connection string
-# 3. For production persistence, set POSTGRES_CONNECTION_STRING or DATABASE_URL with actual PostgreSQL credentials
-# 4. The MemorySaver works fine for conversation state during the request lifecycle
-# 5. Conversation archiving to the messages table provides long-term persistence through Supabase REST API
+# Checkpoint configuration using Supabase REST API
+# 
+# NEW ARCHITECTURE BENEFITS:
+# ✅ Uses Supabase REST API (same as rest of the application)
+# ✅ No complex PostgreSQL connection management
+# ✅ Consistent error handling and logging
+# ✅ Proper RLS (Row Level Security) support
+# ✅ Automatic cleanup of old checkpoints
+# ✅ Better performance with proper indexing
+# ✅ More reliable than direct PostgreSQL connections
 
-async def create_checkpoint_saver():
-    """Create a PostgreSQL checkpoint saver for state persistence using Supabase.
+class SupabaseCheckpointer:
+    """Custom checkpointer that uses Supabase REST API for state persistence.
     
-    Note: This requires a direct PostgreSQL connection string, not the Supabase REST API credentials.
-    If PostgreSQL connection details are not available, falls back to MemorySaver.
+    This replaces the problematic PostgreSQL direct connection approach with a clean,
+    REST API-based solution that's consistent with the rest of the application.
     """
-    try:
-        # Try to get direct PostgreSQL connection string first
-        postgres_connection_string = os.getenv("POSTGRES_CONNECTION_STRING") or os.getenv("DATABASE_URL")
-        
-        if postgres_connection_string:
-            logger.info("Using direct PostgreSQL connection string for checkpointing")
+    
+    def __init__(self):
+        """Initialize the Supabase checkpointer."""
+        self.supabase = None
+        self._initialize_client()
+    
+    def _initialize_client(self):
+        """Initialize Supabase client."""
+        try:
+            self.supabase = get_supabase_client()
+            logger.info("Supabase REST API checkpointer initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize Supabase client for checkpointing: {e}")
+            self.supabase = None
+    
+    async def aget_tuple(self, config: dict) -> tuple:
+        """Get checkpoint tuple for a given config."""
+        try:
+            if not self.supabase:
+                return None
             
-            # Create async connection
-            conn = await psycopg.AsyncConnection.connect(
-                postgres_connection_string,
-                autocommit=True,
-                prepare_threshold=0  # Disable prepared statements to avoid conflicts
+            thread_id = config.get("configurable", {}).get("thread_id")
+            if not thread_id:
+                return None
+            
+            # Get the latest checkpoint for this thread
+            response = self.supabase.table('langgraph_checkpoints').select('*').eq('thread_id', thread_id).order('created_at', desc=True).limit(1).execute()
+            
+            if not response.data:
+                return None
+            
+            checkpoint_data = response.data[0]
+            return (
+                checkpoint_data.get('checkpoint_data'),
+                checkpoint_data.get('metadata', {}),
+                checkpoint_data.get('parent_config'),
+                checkpoint_data.get('pending_writes', [])
             )
             
-            # Create checkpointer
-            checkpointer = AsyncPostgresSaver(conn)
-            await checkpointer.setup()
+        except Exception as e:
+            logger.error(f"Error getting checkpoint: {e}")
+            return None
+    
+    async def aput(self, config: dict, checkpoint: dict, metadata: dict, new_versions: dict) -> dict:
+        """Save checkpoint data."""
+        try:
+            if not self.supabase:
+                return config
             
-            logger.info("PostgreSQL checkpoint saver initialized successfully")
-            return checkpointer
-        
-        # Try Supabase credentials (though this approach has limitations)
+            thread_id = config.get("configurable", {}).get("thread_id")
+            if not thread_id:
+                return config
+            
+            # Create checkpoint record
+            checkpoint_record = {
+                'thread_id': thread_id,
+                'checkpoint_data': checkpoint,
+                'metadata': metadata,
+                'parent_config': config,
+                'pending_writes': new_versions.get('pending_writes', []),
+                'created_at': datetime.now().isoformat()
+            }
+            
+            # Insert checkpoint
+            self.supabase.table('langgraph_checkpoints').insert(checkpoint_record).execute()
+            logger.debug(f"Saved checkpoint for thread {thread_id}")
+            
+            # Trigger cleanup of old checkpoints (async, don't block)
+            try:
+                await self.cleanup_old_checkpoints(thread_id, keep_latest=5)
+            except Exception as e:
+                logger.warning(f"Non-critical error during checkpoint cleanup: {e}")
+            
+            return config
+            
+        except Exception as e:
+            logger.error(f"Error saving checkpoint: {e}")
+            return config
+    
+    async def alist(self, config: dict, limit: int = 10, before: dict = None) -> list:
+        """List checkpoints for a thread."""
+        try:
+            if not self.supabase:
+                return []
+            
+            thread_id = config.get("configurable", {}).get("thread_id")
+            if not thread_id:
+                return []
+            
+            query = self.supabase.table('langgraph_checkpoints').select('*').eq('thread_id', thread_id).order('created_at', desc=True).limit(limit)
+            
+            response = query.execute()
+            
+            checkpoints = []
+            for item in response.data:
+                checkpoints.append({
+                    'config': item.get('parent_config', config),
+                    'checkpoint': item.get('checkpoint_data'),
+                    'metadata': item.get('metadata', {}),
+                    'parent_config': item.get('parent_config'),
+                    'pending_writes': item.get('pending_writes', [])
+                })
+            
+            return checkpoints
+            
+        except Exception as e:
+            logger.error(f"Error listing checkpoints: {e}")
+            return []
+    
+    async def cleanup_old_checkpoints(self, thread_id: str, keep_latest: int = 5):
+        """Clean up old checkpoints for a thread, keeping only the latest N."""
+        try:
+            if not self.supabase:
+                return
+            
+            # Get all checkpoints for this thread, ordered by creation date
+            response = self.supabase.table('langgraph_checkpoints').select('id, created_at').eq('thread_id', thread_id).order('created_at', desc=True).execute()
+            
+            if len(response.data) > keep_latest:
+                # Get IDs of checkpoints to delete (all except the latest N)
+                to_delete = [item['id'] for item in response.data[keep_latest:]]
+                
+                # Delete old checkpoints
+                for checkpoint_id in to_delete:
+                    self.supabase.table('langgraph_checkpoints').delete().eq('id', checkpoint_id).execute()
+                
+                logger.info(f"Cleaned up {len(to_delete)} old checkpoints for thread {thread_id}")
+            
+        except Exception as e:
+            logger.error(f"Error cleaning up old checkpoints: {e}")
+    
+    def get_stats(self) -> dict:
+        """Get checkpointer statistics."""
+        try:
+            if not self.supabase:
+                return {"status": "unavailable", "total_checkpoints": 0}
+            
+            # Get total checkpoint count
+            response = self.supabase.table('langgraph_checkpoints').select('id', count='exact').execute()
+            total_count = response.count if hasattr(response, 'count') else len(response.data)
+            
+            return {
+                "status": "active",
+                "type": "supabase_rest_api",
+                "total_checkpoints": total_count,
+                "backend": "supabase"
+            }
+            
+        except Exception as e:
+            logger.error(f"Error getting checkpointer stats: {e}")
+            return {"status": "error", "total_checkpoints": 0}
+
+async def create_checkpoint_saver():
+    """Create a Supabase REST API checkpoint saver for state persistence."""
+    try:
+        # Check if we have Supabase credentials
         supabase_url = os.getenv("SUPABASE_URL")
         supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
         
         if supabase_url and supabase_key:
-            logger.info("Attempting to create PostgreSQL connection from Supabase credentials")
+            logger.info("Creating Supabase REST API checkpointer")
             
-            # Extract project ID from Supabase URL
-            if "supabase.co" in supabase_url:
-                project_id = supabase_url.replace("https://", "").replace(".supabase.co", "")
-                
-                # Construct PostgreSQL connection string for Supabase
-                # Note: This uses the service role key as password, which may not work
-                connection_string = f"postgresql://postgres:{supabase_key}@db.{project_id}.supabase.co:5432/postgres"
-                
-                # Create async connection
-                conn = await psycopg.AsyncConnection.connect(
-                    connection_string,
-                    autocommit=True,
-                    prepare_threshold=0
-                )
-                
-                # Create checkpointer
-                checkpointer = AsyncPostgresSaver(conn)
-                await checkpointer.setup()
-                
-                logger.info("PostgreSQL checkpoint saver initialized successfully using Supabase")
+            # Try to create the checkpointer
+            checkpointer = SupabaseCheckpointer()
+            
+            if checkpointer.supabase:
+                logger.info("Supabase REST API checkpoint saver initialized successfully")
                 return checkpointer
-        
-        # If no valid connection details found, fall back to memory saver
-        logger.warning("No PostgreSQL connection details found, falling back to memory saver")
-        logger.info("For persistent checkpointing, set POSTGRES_CONNECTION_STRING or DATABASE_URL environment variable")
-        return MemorySaver()
+            else:
+                logger.warning("Supabase client initialization failed, falling back to memory saver")
+                return MemorySaver()
+        else:
+            logger.info("Supabase credentials not found, using memory saver for checkpointing")
+            return MemorySaver()
         
     except Exception as e:
-        logger.error(f"Failed to create PostgreSQL checkpoint saver: {e}")
+        logger.error(f"Failed to create Supabase checkpoint saver: {e}")
         logger.info("Falling back to memory saver for checkpointing")
         return MemorySaver()
 
@@ -1383,9 +1504,9 @@ async def archive_conversation_to_messages_table(contact_id: str, user_id: str, 
         message_records = []
         for i, message in enumerate(messages):
             if isinstance(message, HumanMessage):
-                sender = 'user'
+                sender = 'user'  # Make sure this matches the database constraint
             elif isinstance(message, AIMessage):
-                sender = 'bot'
+                sender = 'assistant'  # Changed from 'bot' to 'assistant' to match constraint
             else:
                 continue  # Skip system messages for archival
             

@@ -1,18 +1,14 @@
--- Create the langgraph_checkpoints table for LangGraph state persistence
--- This table stores the conversation state for each thread (contact conversation)
+-- Create table for LangGraph checkpoints using Supabase REST API
+-- This replaces the need for direct PostgreSQL connection
 
 CREATE TABLE IF NOT EXISTS langgraph_checkpoints (
+    id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
     thread_id TEXT NOT NULL,
-    checkpoint_ns TEXT NOT NULL DEFAULT '',
-    checkpoint_id TEXT NOT NULL,
-    parent_checkpoint_id TEXT,
-    type TEXT,
-    checkpoint JSONB NOT NULL,
-    metadata JSONB NOT NULL DEFAULT '{}',
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    
-    PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id)
+    checkpoint_data JSONB NOT NULL,
+    metadata JSONB DEFAULT '{}',
+    parent_config JSONB DEFAULT '{}',
+    pending_writes JSONB DEFAULT '[]',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
 -- Create indexes for performance
@@ -20,29 +16,43 @@ CREATE INDEX IF NOT EXISTS idx_langgraph_checkpoints_thread_id
 ON langgraph_checkpoints(thread_id);
 
 CREATE INDEX IF NOT EXISTS idx_langgraph_checkpoints_created_at 
-ON langgraph_checkpoints(created_at);
+ON langgraph_checkpoints(created_at DESC);
 
-CREATE INDEX IF NOT EXISTS idx_langgraph_checkpoints_parent 
-ON langgraph_checkpoints(parent_checkpoint_id);
+-- Add RLS policies for security
+ALTER TABLE langgraph_checkpoints ENABLE ROW LEVEL SECURITY;
 
--- Create a function to automatically update the updated_at timestamp
-CREATE OR REPLACE FUNCTION update_langgraph_checkpoints_updated_at()
-RETURNS TRIGGER AS $$
+-- Policy: Users can only access their own checkpoints
+-- Note: This assumes user_id is stored in the thread_id or metadata
+CREATE POLICY "Users can access their own checkpoints" ON langgraph_checkpoints
+    FOR ALL USING (
+        -- Allow access if the thread_id contains the user's ID
+        -- Thread ID format: athena_{user_id}_{contact_id}
+        thread_id LIKE 'athena_' || auth.uid() || '_%'
+        OR
+        -- Or if using service role key (for server-side operations)
+        auth.role() = 'service_role'
+    );
+
+-- Grant necessary permissions
+GRANT ALL ON langgraph_checkpoints TO authenticated;
+GRANT ALL ON langgraph_checkpoints TO service_role;
+
+-- Optional: Add cleanup policy to remove old checkpoints
+-- Keep only the last 10 checkpoints per thread
+CREATE OR REPLACE FUNCTION cleanup_old_checkpoints()
+RETURNS void AS $$
 BEGIN
-    NEW.updated_at = NOW();
-    RETURN NEW;
+    WITH ranked_checkpoints AS (
+        SELECT id, 
+               ROW_NUMBER() OVER (PARTITION BY thread_id ORDER BY created_at DESC) as rn
+        FROM langgraph_checkpoints
+    )
+    DELETE FROM langgraph_checkpoints 
+    WHERE id IN (
+        SELECT id FROM ranked_checkpoints WHERE rn > 10
+    );
 END;
 $$ LANGUAGE plpgsql;
 
--- Create trigger to automatically update updated_at
-DROP TRIGGER IF EXISTS trigger_update_langgraph_checkpoints_updated_at ON langgraph_checkpoints;
-CREATE TRIGGER trigger_update_langgraph_checkpoints_updated_at
-    BEFORE UPDATE ON langgraph_checkpoints
-    FOR EACH ROW
-    EXECUTE FUNCTION update_langgraph_checkpoints_updated_at();
-
--- Add helpful comments
-COMMENT ON TABLE langgraph_checkpoints IS 'Stores LangGraph conversation state checkpoints for persistent memory across sessions';
-COMMENT ON COLUMN langgraph_checkpoints.thread_id IS 'Unique identifier for each conversation thread (format: athena_{user_id}_{contact_id})';
-COMMENT ON COLUMN langgraph_checkpoints.checkpoint IS 'Complete conversation state including messages, summary, and metadata';
-COMMENT ON COLUMN langgraph_checkpoints.metadata IS 'Additional metadata about the checkpoint'; 
+-- Optional: Create a scheduled job to run cleanup (if pg_cron is available)
+-- SELECT cron.schedule('cleanup-checkpoints', '0 2 * * *', 'SELECT cleanup_old_checkpoints();'); 

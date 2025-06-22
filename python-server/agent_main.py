@@ -1137,35 +1137,96 @@ class SupabaseCheckpointer:
     def _serialize_data(self, data: Any) -> str:
         """Serialize data using pickle and base64 encoding for safe storage."""
         try:
-            # Use pickle to serialize the data
+            # First attempt: Use pickle to serialize the data
             pickled_data = pickle.dumps(data)
             # Encode as base64 for safe JSON storage
             encoded_data = base64.b64encode(pickled_data).decode('utf-8')
+            logger.debug(f"Successfully serialized data of type {type(data)} using pickle")
             return encoded_data
-        except Exception as e:
-            logger.error(f"Error serializing data: {e}")
-            # Fallback to JSON serialization for simple data
+        except Exception as pickle_error:
+            logger.warning(f"Pickle serialization failed for {type(data)}: {pickle_error}")
+            
+            # Second attempt: Try JSON serialization with string conversion fallback
             try:
-                return json.dumps(data, default=str)
-            except Exception as json_e:
-                logger.error(f"Error with JSON fallback serialization: {json_e}")
-                return json.dumps({"error": "serialization_failed", "type": str(type(data))})
+                json_data = json.dumps(data, default=str)
+                logger.debug(f"Successfully serialized data of type {type(data)} using JSON with string fallback")
+                return json_data
+            except Exception as json_error:
+                logger.warning(f"JSON serialization with string fallback failed for {type(data)}: {json_error}")
+                
+                # Third attempt: Try to convert to a simple representation
+                try:
+                    if hasattr(data, '__dict__'):
+                        # For objects with __dict__, try to serialize their attributes
+                        simple_repr = {
+                            "_type": str(type(data).__name__),
+                            "_module": str(type(data).__module__),
+                            "attributes": str(data.__dict__)
+                        }
+                    else:
+                        # For other types, just use string representation
+                        simple_repr = {
+                            "_type": str(type(data).__name__),
+                            "_value": str(data)
+                        }
+                    
+                    json_data = json.dumps(simple_repr)
+                    logger.debug(f"Successfully serialized data of type {type(data)} using simple representation")
+                    return json_data
+                except Exception as repr_error:
+                    logger.error(f"All serialization attempts failed for {type(data)}: {repr_error}")
+                    
+                    # Final fallback: Return a minimal error representation
+                    error_repr = {
+                        "error": "serialization_failed",
+                        "type": str(type(data).__name__),
+                        "module": getattr(type(data), '__module__', 'unknown'),
+                        "message": "Unable to serialize this object"
+                    }
+                    return json.dumps(error_repr)
     
     def _deserialize_data(self, encoded_data: str) -> Any:
         """Deserialize data from base64 encoded pickle."""
+        if not encoded_data:
+            return {}
+            
         try:
-            # First try to decode as base64 and unpickle
-            pickled_data = base64.b64decode(encoded_data.encode('utf-8'))
-            data = pickle.loads(pickled_data)
-            return data
-        except Exception as e:
-            logger.debug(f"Pickle deserialization failed, trying JSON: {e}")
-            # Fallback to JSON deserialization
+            # First attempt: Try to decode as base64 and unpickle (our preferred format)
             try:
-                return json.loads(encoded_data)
-            except Exception as json_e:
-                logger.error(f"Error deserializing data: {json_e}")
-                return {}
+                pickled_data = base64.b64decode(encoded_data.encode('utf-8'))
+                data = pickle.loads(pickled_data)
+                logger.debug(f"Successfully deserialized data using pickle")
+                return data
+            except Exception as pickle_error:
+                logger.debug(f"Pickle deserialization failed, trying JSON: {pickle_error}")
+                
+                # Second attempt: Try JSON deserialization
+                try:
+                    data = json.loads(encoded_data)
+                    logger.debug(f"Successfully deserialized data using JSON")
+                    
+                    # Check if this is a simple representation we created
+                    if isinstance(data, dict) and "_type" in data:
+                        if data.get("error") == "serialization_failed":
+                            logger.warning(f"Encountered serialization failure record for type {data.get('type')}")
+                            # Return a placeholder object
+                            return {"_deserialization_error": True, "original_type": data.get('type')}
+                        else:
+                            logger.debug(f"Encountered simple representation for type {data.get('_type')}")
+                            # Could attempt to reconstruct object, but for now return as-is
+                            return data
+                    
+                    return data
+                except Exception as json_error:
+                    logger.error(f"JSON deserialization failed: {json_error}")
+                    
+                    # Final fallback: Return a safe default
+                    logger.warning(f"All deserialization attempts failed, returning empty dict")
+                    return {}
+                    
+        except Exception as e:
+            logger.error(f"Unexpected error during deserialization: {e}")
+            return {}
     
     async def aget_tuple(self, config: dict) -> Optional[tuple]:
         """Get checkpoint tuple for a given config."""
@@ -1185,18 +1246,36 @@ class SupabaseCheckpointer:
             
             checkpoint_data = response.data[0]
             
-            # Deserialize the checkpoint data
+            # Deserialize ALL the fields
             serialized_checkpoint = checkpoint_data.get('checkpoint_data')
             if isinstance(serialized_checkpoint, str):
                 deserialized_checkpoint = self._deserialize_data(serialized_checkpoint)
             else:
                 deserialized_checkpoint = serialized_checkpoint
             
+            serialized_metadata = checkpoint_data.get('metadata', {})
+            if isinstance(serialized_metadata, str):
+                deserialized_metadata = self._deserialize_data(serialized_metadata)
+            else:
+                deserialized_metadata = serialized_metadata
+            
+            serialized_parent_config = checkpoint_data.get('parent_config')
+            if isinstance(serialized_parent_config, str):
+                deserialized_parent_config = self._deserialize_data(serialized_parent_config)
+            else:
+                deserialized_parent_config = serialized_parent_config
+            
+            serialized_pending_writes = checkpoint_data.get('pending_writes', [])
+            if isinstance(serialized_pending_writes, str):
+                deserialized_pending_writes = self._deserialize_data(serialized_pending_writes)
+            else:
+                deserialized_pending_writes = serialized_pending_writes
+            
             return (
                 deserialized_checkpoint,
-                checkpoint_data.get('metadata', {}),
-                checkpoint_data.get('parent_config'),
-                checkpoint_data.get('pending_writes', [])
+                deserialized_metadata,
+                deserialized_parent_config,
+                deserialized_pending_writes
             )
             
         except Exception as e:
@@ -1254,16 +1333,19 @@ class SupabaseCheckpointer:
             if not thread_id:
                 return config
             
-            # Serialize the checkpoint data
+            # Serialize ALL potentially problematic data
             serialized_checkpoint = self._serialize_data(checkpoint)
+            serialized_metadata = self._serialize_data(metadata)
+            serialized_config = self._serialize_data(config)
+            serialized_pending_writes = self._serialize_data(new_versions.get('pending_writes', []))
             
-            # Create checkpoint record
+            # Create checkpoint record with all serialized data
             checkpoint_record = {
                 'thread_id': thread_id,
                 'checkpoint_data': serialized_checkpoint,
-                'metadata': metadata,
-                'parent_config': config,
-                'pending_writes': new_versions.get('pending_writes', []),
+                'metadata': serialized_metadata,
+                'parent_config': serialized_config,
+                'pending_writes': serialized_pending_writes,
                 'created_at': datetime.now().isoformat()
             }
             
@@ -1282,6 +1364,9 @@ class SupabaseCheckpointer:
         except Exception as e:
             logger.error(f"Error saving checkpoint: {e}")
             logger.error(f"Checkpoint data type: {type(checkpoint)}")
+            logger.error(f"Metadata type: {type(metadata)}")
+            logger.error(f"Config type: {type(config)}")
+            logger.error(f"New versions type: {type(new_versions)}")
             logger.error(f"Traceback: {traceback.format_exc()}")
             return config
     
@@ -1295,19 +1380,24 @@ class SupabaseCheckpointer:
             if not thread_id:
                 return
             
-            # Serialize the writes data
+            # Serialize the writes data and config
             serialized_writes = self._serialize_data(writes)
+            serialized_config = self._serialize_data(config)
+            
+            # Create metadata with serialized writes info
+            metadata = {
+                'type': 'writes',
+                'task_id': task_id,
+                'writes': serialized_writes
+            }
+            serialized_metadata = self._serialize_data(metadata)
             
             # Store as metadata for now - you may want to create a separate table for writes
             checkpoint_record = {
                 'thread_id': thread_id,
                 'checkpoint_data': self._serialize_data({}),
-                'metadata': {
-                    'type': 'writes',
-                    'task_id': task_id,
-                    'writes': serialized_writes
-                },
-                'parent_config': config,
+                'metadata': serialized_metadata,
+                'parent_config': serialized_config,
                 'pending_writes': serialized_writes,
                 'created_at': datetime.now().isoformat()
             }
@@ -1318,6 +1408,7 @@ class SupabaseCheckpointer:
         except Exception as e:
             logger.error(f"Error saving writes: {e}")
             logger.error(f"Writes data type: {type(writes)}")
+            logger.error(f"Config type: {type(config)}")
             logger.error(f"Traceback: {traceback.format_exc()}")
     
     def put_writes(self, config: dict, writes: list, task_id: str) -> None:
@@ -1345,19 +1436,37 @@ class SupabaseCheckpointer:
             
             checkpoints = []
             for item in response.data:
-                # Deserialize checkpoint data
+                # Deserialize ALL fields
                 serialized_checkpoint = item.get('checkpoint_data')
                 if isinstance(serialized_checkpoint, str):
                     deserialized_checkpoint = self._deserialize_data(serialized_checkpoint)
                 else:
                     deserialized_checkpoint = serialized_checkpoint
                 
+                serialized_metadata = item.get('metadata', {})
+                if isinstance(serialized_metadata, str):
+                    deserialized_metadata = self._deserialize_data(serialized_metadata)
+                else:
+                    deserialized_metadata = serialized_metadata
+                
+                serialized_parent_config = item.get('parent_config')
+                if isinstance(serialized_parent_config, str):
+                    deserialized_parent_config = self._deserialize_data(serialized_parent_config)
+                else:
+                    deserialized_parent_config = serialized_parent_config
+                
+                serialized_pending_writes = item.get('pending_writes', [])
+                if isinstance(serialized_pending_writes, str):
+                    deserialized_pending_writes = self._deserialize_data(serialized_pending_writes)
+                else:
+                    deserialized_pending_writes = serialized_pending_writes
+                
                 checkpoints.append({
-                    'config': item.get('parent_config', config),
+                    'config': deserialized_parent_config or config,
                     'checkpoint': deserialized_checkpoint,
-                    'metadata': item.get('metadata', {}),
-                    'parent_config': item.get('parent_config'),
-                    'pending_writes': item.get('pending_writes', [])
+                    'metadata': deserialized_metadata,
+                    'parent_config': deserialized_parent_config,
+                    'pending_writes': deserialized_pending_writes
                 })
             
             return checkpoints

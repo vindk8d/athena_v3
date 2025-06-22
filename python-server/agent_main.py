@@ -1297,18 +1297,18 @@ class SimpleSupabaseCheckpointer:
         # Handle LangGraph checkpoint format
         channel_values = checkpoint.get("channel_values", {})
         
-        # Extract messages from channel_values or direct checkpoint
-        messages = channel_values.get("messages", checkpoint.get("messages", []))
+        # Extract messages - each field in SimpleState becomes its own channel
+        messages = channel_values.get("messages", [])
         serialized_messages = self._serialize_messages(messages) if messages else []
         
-        # Extract other essential data from channel_values or direct checkpoint
+        # Extract other essential data - these are separate channels in StateGraph
         return {
             "messages": serialized_messages,
-            "conversation_summary": channel_values.get("conversation_summary", checkpoint.get("conversation_summary")),
-            "user_id": channel_values.get("user_id", checkpoint.get("user_id")),
-            "contact_id": channel_values.get("contact_id", checkpoint.get("contact_id")),
-            "message_intent": channel_values.get("message_intent", checkpoint.get("message_intent")),
-            "metadata": channel_values.get("metadata", checkpoint.get("metadata", {})),
+            "conversation_summary": channel_values.get("conversation_summary"),
+            "user_id": channel_values.get("user_id"),
+            "contact_id": channel_values.get("contact_id"),
+            "message_intent": channel_values.get("message_intent"),
+            "metadata": channel_values.get("metadata", {}),
             "timestamp": checkpoint.get("ts", datetime.now().isoformat())
         }
     
@@ -1331,7 +1331,8 @@ class SimpleSupabaseCheckpointer:
         # Create the proper LangGraph checkpoint format
         from collections import defaultdict
         
-        # Map your simple state to LangGraph's expected channel structure
+        # For StateGraph, each field should be a separate channel
+        # Map your simple state to individual channels
         channel_values = {
             "messages": messages,
             "conversation_summary": simple_state.get("conversation_summary"),
@@ -2213,12 +2214,11 @@ Make them feel comfortable and ready to use your calendar features.""")
             # Check if this is a continuing conversation by getting existing state
             try:
                 existing_state = await graph.aget_state({"configurable": {"thread_id": thread_id}})
-                # Check if state exists and has messages in channel_values
+                # Check if state exists and has messages
                 is_continuing_conversation = (
                     existing_state and 
-                    hasattr(existing_state, 'values') and 
                     existing_state.values and 
-                    existing_state.values.get("channel_values", {}).get("messages")
+                    existing_state.values.get("messages")
                 )
                 logger.info(f"Thread {thread_id}: {'Continuing' if is_continuing_conversation else 'New'} conversation")
             except Exception as e:
@@ -2328,10 +2328,9 @@ Make them feel comfortable and ready to use your calendar features.""")
             # Get the current state
             state = await graph.aget_state({"configurable": {"thread_id": thread_id}})
             
-            if state and hasattr(state, 'values') and state.values:
-                channel_values = state.values.get("channel_values", {})
-                conversation_summary = channel_values.get("conversation_summary")
-                messages = channel_values.get("messages", [])
+            if state and state.values:
+                conversation_summary = state.values.get("conversation_summary")
+                messages = state.values.get("messages", [])
                 return {
                     "status": "success",
                     "thread_id": thread_id,
@@ -2363,7 +2362,7 @@ Make them feel comfortable and ready to use your calendar features.""")
             # Get the current state snapshot
             state_snapshot = await graph.aget_state({"configurable": {"thread_id": thread_id}})
             
-            if not state_snapshot or not hasattr(state_snapshot, 'values') or not state_snapshot.values:
+            if not state_snapshot or not state_snapshot.values:
                 return {
                     "status": "success",
                     "thread_id": thread_id,
@@ -2376,10 +2375,9 @@ Make them feel comfortable and ready to use your calendar features.""")
             
             # Extract state information
             values = state_snapshot.values
-            channel_values = values.get("channel_values", {})
-            messages = channel_values.get("messages", [])
-            conversation_summary = channel_values.get("conversation_summary")
-            metadata = channel_values.get("metadata", {})
+            messages = values.get("messages", [])
+            conversation_summary = values.get("conversation_summary")
+            metadata = values.get("metadata", {})
             
             # Get state history (LangGraph's built-in versioning)
             state_history = []
@@ -2389,12 +2387,10 @@ Make them feel comfortable and ready to use your calendar features.""")
                     {"configurable": {"thread_id": thread_id}}, 
                     limit=5
                 ):
-                    state_channel_values = state.values.get("channel_values", {}) if state.values else {}
                     state_history.append({
-                        "timestamp": state.created_at.isoformat() if state.created_at else None,
-                        "step": state.step,
+                        "timestamp": getattr(state, 'created_at', None),
                         "next_actions": list(state.next) if state.next else [],
-                        "message_count": len(state_channel_values.get("messages", []))
+                        "message_count": len(state.values.get("messages", [])) if state.values else 0
                     })
             except Exception as e:
                 logger.warning(f"Could not retrieve state history: {e}")
@@ -2405,10 +2401,9 @@ Make them feel comfortable and ready to use your calendar features.""")
                 "exists": True,
                 "conversation_summary": conversation_summary,
                 "message_count": len(messages),
-                "last_updated": state_snapshot.created_at.isoformat() if state_snapshot.created_at else None,
+                "last_updated": getattr(state_snapshot, 'created_at', None),
                 "metadata": metadata,
                 "state_history": state_history,
-                "current_step": state_snapshot.step,
                 "next_actions": list(state_snapshot.next) if state_snapshot.next else []
             }
         except Exception as e:

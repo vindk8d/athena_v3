@@ -1621,8 +1621,13 @@ Always double-check that dates and times make sense before proceeding.
         
         return create_tool_calling_agent(self.llm, tools, execution_prompt)
     
-    async def _create_graph(self) -> StateGraph:
-        """Create the LangGraph workflow with checkpointing and enhanced features."""
+    async def _create_graph(self, use_checkpointer: bool = True) -> StateGraph:
+        """Create the LangGraph workflow with optional checkpointing.
+        
+        Args:
+            use_checkpointer: If True, includes a custom checkpointer. 
+                             Set to False for LangGraph Studio/API which handles persistence automatically.
+        """
         # Initialize the graph
         workflow = StateGraph(SimpleState)
         
@@ -1659,10 +1664,13 @@ Always double-check that dates and times make sense before proceeding.
         workflow.add_edge("execution_decider", "archiver")
         workflow.add_edge("archiver", END)
         
-        # Create checkpointer
-        checkpointer = await create_checkpoint_saver()
-        
-        return workflow.compile(checkpointer=checkpointer)
+        # Create checkpointer only if requested
+        if use_checkpointer:
+            checkpointer = await create_checkpoint_saver()
+            return workflow.compile(checkpointer=checkpointer)
+        else:
+            # For LangGraph Studio/API, don't use custom checkpointer
+            return workflow.compile()
     
     # Node implementations
     async def _summarizer_node(self, state: SimpleState) -> SimpleState:
@@ -2085,11 +2093,8 @@ def reset_simple_agent():
 async def _create_simple_studio_graph():
     """Create a compiled graph for LangGraph Studio."""
     agent = get_simple_agent()
-    return await agent._create_graph()
-
-# Note: For LangGraph Studio, you may need to call this async function
-# Example usage: graph = await _create_simple_studio_graph()
-# athena_elegant_graph = _create_simple_studio_graph()  # This returns a coroutine
+    # Use no checkpointer for LangGraph Studio since it handles persistence automatically
+    return await agent._create_graph(use_checkpointer=False)
 
 # For backward compatibility with synchronous usage, create a wrapper
 def create_studio_graph_sync():
@@ -2099,4 +2104,7 @@ def create_studio_graph_sync():
         return loop.run_until_complete(_create_simple_studio_graph())
     except RuntimeError:
         # If no event loop is running, create one
-        return asyncio.run(_create_simple_studio_graph()) 
+        return asyncio.run(_create_simple_studio_graph())
+
+# Export the graph for LangGraph Studio
+athena_elegant_graph = create_studio_graph_sync() 

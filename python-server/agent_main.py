@@ -23,9 +23,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from google.auth.transport.requests import Request
 from supabase import create_client, Client
-import pickle
-import base64
-import traceback
+# Removed complex serialization imports - now using simple JSON serialization
 from google_auth_oauthlib.flow import Flow
 
 from config import Config
@@ -1106,22 +1104,19 @@ tools = [check_availability_tool, create_event_tool, get_events_tool, get_curren
          list_calendars_tool, modify_event_tool, delete_event_tool, find_available_slots_tool, 
          get_available_slots_for_period_tool]
 
-class SupabaseCheckpointer:
-    """Custom checkpointer that uses Supabase REST API for state persistence.
+class SimpleSupabaseCheckpointer:
+    """Simplified Supabase checkpointer that focuses only on essential conversation data.
     
-    This replaces the problematic PostgreSQL direct connection approach with a clean,
-    REST API-based solution that's consistent with the rest of the application.
+    This stores only the critical data we need:
+    - Messages (as simple JSON)
+    - Conversation summary
+    - Thread metadata
     
-    Implements the BaseCheckpointSaver interface with the following required methods:
-    - get_tuple, aget_tuple: Get checkpoint tuple for a given config
-    - list, alist: List checkpoints for a thread
-    - put, aput: Save checkpoint data
-    - put_writes, aput_writes: Store intermediate writes linked to a checkpoint
-    - delete_thread, adelete_thread: Delete all checkpoints for a thread
+    Avoids complex serialization and focuses on reliability.
     """
     
     def __init__(self):
-        """Initialize the Supabase checkpointer."""
+        """Initialize the simple Supabase checkpointer."""
         self.supabase = None
         self._initialize_client()
     
@@ -1129,104 +1124,84 @@ class SupabaseCheckpointer:
         """Initialize Supabase client."""
         try:
             self.supabase = get_supabase_client()
-            logger.info("Supabase REST API checkpointer initialized successfully")
+            logger.info("Simple Supabase checkpointer initialized successfully")
         except Exception as e:
-            logger.error(f"Failed to initialize Supabase client for checkpointing: {e}")
+            logger.error(f"Failed to initialize Supabase client: {e}")
             self.supabase = None
     
-    def _serialize_data(self, data: Any) -> str:
-        """Serialize data using pickle and base64 encoding for safe storage."""
-        try:
-            # First attempt: Use pickle to serialize the data
-            pickled_data = pickle.dumps(data)
-            # Encode as base64 for safe JSON storage
-            encoded_data = base64.b64encode(pickled_data).decode('utf-8')
-            logger.debug(f"Successfully serialized data of type {type(data)} using pickle")
-            return encoded_data
-        except Exception as pickle_error:
-            logger.warning(f"Pickle serialization failed for {type(data)}: {pickle_error}")
+    def _serialize_messages(self, messages: List[BaseMessage]) -> List[dict]:
+        """Convert LangChain messages to simple dictionaries."""
+        serialized = []
+        for msg in messages:
+            if isinstance(msg, HumanMessage):
+                msg_type = "human"
+            elif isinstance(msg, AIMessage):
+                msg_type = "ai"
+            elif isinstance(msg, SystemMessage):
+                msg_type = "system"
+            else:
+                msg_type = "unknown"
             
-            # Second attempt: Try JSON serialization with string conversion fallback
-            try:
-                json_data = json.dumps(data, default=str)
-                logger.debug(f"Successfully serialized data of type {type(data)} using JSON with string fallback")
-                return json_data
-            except Exception as json_error:
-                logger.warning(f"JSON serialization with string fallback failed for {type(data)}: {json_error}")
-                
-                # Third attempt: Try to convert to a simple representation
-                try:
-                    if hasattr(data, '__dict__'):
-                        # For objects with __dict__, try to serialize their attributes
-                        simple_repr = {
-                            "_type": str(type(data).__name__),
-                            "_module": str(type(data).__module__),
-                            "attributes": str(data.__dict__)
-                        }
-                    else:
-                        # For other types, just use string representation
-                        simple_repr = {
-                            "_type": str(type(data).__name__),
-                            "_value": str(data)
-                        }
-                    
-                    json_data = json.dumps(simple_repr)
-                    logger.debug(f"Successfully serialized data of type {type(data)} using simple representation")
-                    return json_data
-                except Exception as repr_error:
-                    logger.error(f"All serialization attempts failed for {type(data)}: {repr_error}")
-                    
-                    # Final fallback: Return a minimal error representation
-                    error_repr = {
-                        "error": "serialization_failed",
-                        "type": str(type(data).__name__),
-                        "module": getattr(type(data), '__module__', 'unknown'),
-                        "message": "Unable to serialize this object"
-                    }
-                    return json.dumps(error_repr)
+            serialized.append({
+                "type": msg_type,
+                "content": str(msg.content),
+                "timestamp": datetime.now().isoformat()
+            })
+        return serialized
     
-    def _deserialize_data(self, encoded_data: str) -> Any:
-        """Deserialize data from base64 encoded pickle."""
-        if not encoded_data:
-            return {}
+    def _deserialize_messages(self, serialized_messages: List[dict]) -> List[BaseMessage]:
+        """Convert simple dictionaries back to LangChain messages."""
+        messages = []
+        for msg_data in serialized_messages:
+            msg_type = msg_data.get("type", "unknown")
+            content = msg_data.get("content", "")
             
-        try:
-            # First attempt: Try to decode as base64 and unpickle (our preferred format)
-            try:
-                pickled_data = base64.b64decode(encoded_data.encode('utf-8'))
-                data = pickle.loads(pickled_data)
-                logger.debug(f"Successfully deserialized data using pickle")
-                return data
-            except Exception as pickle_error:
-                logger.debug(f"Pickle deserialization failed, trying JSON: {pickle_error}")
-                
-                # Second attempt: Try JSON deserialization
-                try:
-                    data = json.loads(encoded_data)
-                    logger.debug(f"Successfully deserialized data using JSON")
-                    
-                    # Check if this is a simple representation we created
-                    if isinstance(data, dict) and "_type" in data:
-                        if data.get("error") == "serialization_failed":
-                            logger.warning(f"Encountered serialization failure record for type {data.get('type')}")
-                            # Return a placeholder object
-                            return {"_deserialization_error": True, "original_type": data.get('type')}
-                        else:
-                            logger.debug(f"Encountered simple representation for type {data.get('_type')}")
-                            # Could attempt to reconstruct object, but for now return as-is
-                            return data
-                    
-                    return data
-                except Exception as json_error:
-                    logger.error(f"JSON deserialization failed: {json_error}")
-                    
-                    # Final fallback: Return a safe default
-                    logger.warning(f"All deserialization attempts failed, returning empty dict")
-                    return {}
-                    
-        except Exception as e:
-            logger.error(f"Unexpected error during deserialization: {e}")
+            if msg_type == "human":
+                messages.append(HumanMessage(content=content))
+            elif msg_type == "ai":
+                messages.append(AIMessage(content=content))
+            elif msg_type == "system":
+                messages.append(SystemMessage(content=content))
+        
+        return messages
+    
+    def _extract_simple_state(self, checkpoint: dict) -> dict:
+        """Extract only the essential data we need from the checkpoint."""
+        if not checkpoint:
             return {}
+        
+        # Extract messages
+        messages = checkpoint.get("messages", [])
+        serialized_messages = self._serialize_messages(messages) if messages else []
+        
+        # Extract other essential data
+        return {
+            "messages": serialized_messages,
+            "conversation_summary": checkpoint.get("conversation_summary"),
+            "user_id": checkpoint.get("user_id"),
+            "contact_id": checkpoint.get("contact_id"),
+            "message_intent": checkpoint.get("message_intent"),
+            "metadata": checkpoint.get("metadata", {}),
+            "timestamp": datetime.now().isoformat()
+        }
+    
+    def _reconstruct_checkpoint(self, simple_state: dict) -> dict:
+        """Reconstruct a full checkpoint from simple state data."""
+        if not simple_state:
+            return {}
+        
+        # Reconstruct messages
+        serialized_messages = simple_state.get("messages", [])
+        messages = self._deserialize_messages(serialized_messages)
+        
+        return {
+            "messages": messages,
+            "conversation_summary": simple_state.get("conversation_summary"),
+            "user_id": simple_state.get("user_id"),
+            "contact_id": simple_state.get("contact_id"),
+            "message_intent": simple_state.get("message_intent"),
+            "metadata": simple_state.get("metadata", {})
+        }
     
     async def aget_tuple(self, config: dict) -> Optional[CheckpointTuple]:
         """Get checkpoint tuple for a given config."""
@@ -1246,30 +1221,19 @@ class SupabaseCheckpointer:
             
             checkpoint_data = response.data[0]
             
-            # Deserialize ALL the fields
-            serialized_checkpoint = checkpoint_data.get('checkpoint_data')
-            if isinstance(serialized_checkpoint, str):
-                deserialized_checkpoint = self._deserialize_data(serialized_checkpoint)
-            else:
-                deserialized_checkpoint = serialized_checkpoint
+            # Get the simple state data
+            simple_state = checkpoint_data.get('checkpoint_data', {})
+            if isinstance(simple_state, str):
+                simple_state = json.loads(simple_state)
             
-            serialized_metadata = checkpoint_data.get('metadata', {})
-            if isinstance(serialized_metadata, str):
-                deserialized_metadata = self._deserialize_data(serialized_metadata)
-            else:
-                deserialized_metadata = serialized_metadata
+            # Reconstruct the full checkpoint
+            reconstructed_checkpoint = self._reconstruct_checkpoint(simple_state)
             
-            serialized_parent_config = checkpoint_data.get('parent_config')
-            if isinstance(serialized_parent_config, str):
-                deserialized_parent_config = self._deserialize_data(serialized_parent_config)
-            else:
-                deserialized_parent_config = serialized_parent_config
-            
-            # Return a proper CheckpointTuple object using positional arguments
+            # Return a proper CheckpointTuple object
             return CheckpointTuple(
                 config,
-                deserialized_checkpoint,
-                deserialized_parent_config
+                reconstructed_checkpoint,
+                config  # Use config as parent_config for simplicity
             )
             
         except Exception as e:
@@ -1283,7 +1247,6 @@ class SupabaseCheckpointer:
             loop = asyncio.get_event_loop()
             return loop.run_until_complete(self.aget_tuple(config))
         except Exception:
-            # If no event loop, create one
             return asyncio.run(self.aget_tuple(config))
     
     async def aget(self, config: dict) -> Optional[Any]:
@@ -1300,6 +1263,46 @@ class SupabaseCheckpointer:
         except Exception:
             return asyncio.run(self.aget(config))
     
+    async def aput(self, config: dict, checkpoint: dict, metadata: dict, new_versions: dict) -> dict:
+        """Save checkpoint data in simplified format."""
+        try:
+            if not self.supabase:
+                return config
+            
+            thread_id = config.get("configurable", {}).get("thread_id")
+            if not thread_id:
+                return config
+            
+            # Extract and simplify the checkpoint data
+            simple_state = self._extract_simple_state(checkpoint)
+            
+            # Create checkpoint record with simple JSON data
+            checkpoint_record = {
+                'thread_id': thread_id,
+                'checkpoint_data': simple_state,  # Store as JSON directly
+                'metadata': metadata or {},  # Store metadata directly
+                'created_at': datetime.now().isoformat()
+            }
+            
+            # Insert or update checkpoint
+            # First try to update existing, then insert if not found
+            existing = self.supabase.table('langgraph_checkpoints').select('id').eq('thread_id', thread_id).limit(1).execute()
+            
+            if existing.data:
+                # Update existing
+                self.supabase.table('langgraph_checkpoints').update(checkpoint_record).eq('thread_id', thread_id).execute()
+                logger.debug(f"Updated checkpoint for thread {thread_id}")
+            else:
+                # Insert new
+                self.supabase.table('langgraph_checkpoints').insert(checkpoint_record).execute()
+                logger.debug(f"Created new checkpoint for thread {thread_id}")
+            
+            return config
+            
+        except Exception as e:
+            logger.error(f"Error saving checkpoint: {e}")
+            return config
+    
     def put(self, config: dict, checkpoint: dict, metadata: dict, new_versions: dict) -> dict:
         """Sync version of put."""
         import asyncio
@@ -1311,99 +1314,15 @@ class SupabaseCheckpointer:
     
     def get_next_version(self, current: Optional[str], channel: str) -> str:
         """Generate next version identifier."""
-        if current is None:
-            return str(uuid.uuid4())
-        
-        # Simple versioning scheme - generate new UUID for each version
         return str(uuid.uuid4())
     
-    async def aput(self, config: dict, checkpoint: dict, metadata: dict, new_versions: dict) -> dict:
-        """Save checkpoint data."""
-        try:
-            if not self.supabase:
-                return config
-            
-            thread_id = config.get("configurable", {}).get("thread_id")
-            if not thread_id:
-                return config
-            
-            # Serialize ALL potentially problematic data
-            serialized_checkpoint = self._serialize_data(checkpoint)
-            serialized_metadata = self._serialize_data(metadata)
-            serialized_config = self._serialize_data(config)
-            serialized_pending_writes = self._serialize_data(new_versions.get('pending_writes', []))
-            
-            # Create checkpoint record with all serialized data
-            checkpoint_record = {
-                'thread_id': thread_id,
-                'checkpoint_data': serialized_checkpoint,
-                'metadata': serialized_metadata,
-                'parent_config': serialized_config,
-                'pending_writes': serialized_pending_writes,
-                'created_at': datetime.now().isoformat()
-            }
-            
-            # Insert checkpoint
-            self.supabase.table('langgraph_checkpoints').insert(checkpoint_record).execute()
-            logger.debug(f"Saved checkpoint for thread {thread_id}")
-            
-            # Trigger cleanup of old checkpoints (async, don't block)
-            try:
-                await self.cleanup_old_checkpoints(thread_id, keep_latest=5)
-            except Exception as e:
-                logger.warning(f"Non-critical error during checkpoint cleanup: {e}")
-            
-            return config
-            
-        except Exception as e:
-            logger.error(f"Error saving checkpoint: {e}")
-            logger.error(f"Checkpoint data type: {type(checkpoint)}")
-            logger.error(f"Metadata type: {type(metadata)}")
-            logger.error(f"Config type: {type(config)}")
-            logger.error(f"New versions type: {type(new_versions)}")
-            logger.error(f"Traceback: {traceback.format_exc()}")
-            return config
-    
     async def aput_writes(self, config: dict, writes: list, task_id: str) -> None:
-        """Store intermediate writes linked to a checkpoint."""
+        """Store intermediate writes - simplified to just log for now."""
         try:
-            if not self.supabase:
-                return
-            
-            thread_id = config.get("configurable", {}).get("thread_id")
-            if not thread_id:
-                return
-            
-            # Serialize the writes data and config
-            serialized_writes = self._serialize_data(writes)
-            serialized_config = self._serialize_data(config)
-            
-            # Create metadata with serialized writes info
-            metadata = {
-                'type': 'writes',
-                'task_id': task_id,
-                'writes': serialized_writes
-            }
-            serialized_metadata = self._serialize_data(metadata)
-            
-            # Store as metadata for now - you may want to create a separate table for writes
-            checkpoint_record = {
-                'thread_id': thread_id,
-                'checkpoint_data': self._serialize_data({}),
-                'metadata': serialized_metadata,
-                'parent_config': serialized_config,
-                'pending_writes': serialized_writes,
-                'created_at': datetime.now().isoformat()
-            }
-            
-            self.supabase.table('langgraph_checkpoints').insert(checkpoint_record).execute()
-            logger.debug(f"Saved writes for thread {thread_id}, task {task_id}")
-            
+            thread_id = config.get("configurable", {}).get("thread_id", "unknown")
+            logger.debug(f"Writes logged for thread {thread_id}, task {task_id}: {len(writes)} items")
         except Exception as e:
-            logger.error(f"Error saving writes: {e}")
-            logger.error(f"Writes data type: {type(writes)}")
-            logger.error(f"Config type: {type(config)}")
-            logger.error(f"Traceback: {traceback.format_exc()}")
+            logger.error(f"Error logging writes: {e}")
     
     def put_writes(self, config: dict, writes: list, task_id: str) -> None:
         """Sync version of put_writes."""
@@ -1415,7 +1334,7 @@ class SupabaseCheckpointer:
             return asyncio.run(self.aput_writes(config, writes, task_id))
     
     async def alist(self, config: dict, limit: int = 10, before: dict = None):
-        """List checkpoints for a thread - async generator returning CheckpointTuple objects."""
+        """List checkpoints for a thread."""
         try:
             if not self.supabase:
                 return
@@ -1424,29 +1343,19 @@ class SupabaseCheckpointer:
             if not thread_id:
                 return
             
-            query = self.supabase.table('langgraph_checkpoints').select('*').eq('thread_id', thread_id).order('created_at', desc=True).limit(limit)
-            
-            response = query.execute()
+            response = self.supabase.table('langgraph_checkpoints').select('*').eq('thread_id', thread_id).order('created_at', desc=True).limit(limit).execute()
             
             for item in response.data:
-                # Deserialize ALL fields
-                serialized_checkpoint = item.get('checkpoint_data')
-                if isinstance(serialized_checkpoint, str):
-                    deserialized_checkpoint = self._deserialize_data(serialized_checkpoint)
-                else:
-                    deserialized_checkpoint = serialized_checkpoint
+                simple_state = item.get('checkpoint_data', {})
+                if isinstance(simple_state, str):
+                    simple_state = json.loads(simple_state)
                 
-                serialized_parent_config = item.get('parent_config')
-                if isinstance(serialized_parent_config, str):
-                    deserialized_parent_config = self._deserialize_data(serialized_parent_config)
-                else:
-                    deserialized_parent_config = serialized_parent_config
+                reconstructed_checkpoint = self._reconstruct_checkpoint(simple_state)
                 
-                # Yield CheckpointTuple objects using positional arguments
                 yield CheckpointTuple(
-                    deserialized_parent_config or config,
-                    deserialized_checkpoint,
-                    deserialized_parent_config
+                    config,
+                    reconstructed_checkpoint,
+                    config
                 )
             
         except Exception as e:
@@ -1454,17 +1363,13 @@ class SupabaseCheckpointer:
             return
     
     def list(self, config: dict, limit: int = 10, before: dict = None):
-        """Sync version of list - generator returning CheckpointTuple objects."""
+        """Sync version of list."""
         import asyncio
         try:
-            # Convert async iterator to regular iterator
             loop = asyncio.get_event_loop()
             if loop.is_running():
-                # If already in an event loop, we need to handle this differently
-                # For now, just return empty iterator
                 return iter([])
             else:
-                # Create a new event loop to run the async method
                 async def _get_checkpoints():
                     checkpoints = []
                     async for checkpoint in self.alist(config, limit, before):
@@ -1478,18 +1383,13 @@ class SupabaseCheckpointer:
             return iter([])
     
     async def adelete_thread(self, thread_id: str) -> None:
-        """Delete all checkpoints and writes associated with a specific thread ID."""
+        """Delete all checkpoints for a thread."""
         try:
             if not self.supabase:
                 return
             
-            # Delete all checkpoints for this thread
             response = self.supabase.table('langgraph_checkpoints').delete().eq('thread_id', thread_id).execute()
-            
-            if response.data:
-                logger.info(f"Deleted {len(response.data)} checkpoints for thread {thread_id}")
-            else:
-                logger.debug(f"No checkpoints found for thread {thread_id}")
+            logger.info(f"Deleted checkpoints for thread {thread_id}")
             
         except Exception as e:
             logger.error(f"Error deleting thread {thread_id}: {e}")
@@ -1503,43 +1403,20 @@ class SupabaseCheckpointer:
         except Exception:
             return asyncio.run(self.adelete_thread(thread_id))
     
-    async def cleanup_old_checkpoints(self, thread_id: str, keep_latest: int = 5):
-        """Clean up old checkpoints for a thread, keeping only the latest N."""
-        try:
-            if not self.supabase:
-                return
-            
-            # Get all checkpoints for this thread, ordered by creation date
-            response = self.supabase.table('langgraph_checkpoints').select('id, created_at').eq('thread_id', thread_id).order('created_at', desc=True).execute()
-            
-            if len(response.data) > keep_latest:
-                # Get IDs of checkpoints to delete (all except the latest N)
-                to_delete = [item['id'] for item in response.data[keep_latest:]]
-                
-                # Delete old checkpoints
-                for checkpoint_id in to_delete:
-                    self.supabase.table('langgraph_checkpoints').delete().eq('id', checkpoint_id).execute()
-                
-                logger.info(f"Cleaned up {len(to_delete)} old checkpoints for thread {thread_id}")
-            
-        except Exception as e:
-            logger.error(f"Error cleaning up old checkpoints: {e}")
-    
     def get_stats(self) -> dict:
         """Get checkpointer statistics."""
         try:
             if not self.supabase:
                 return {"status": "unavailable", "total_checkpoints": 0}
             
-            # Get total checkpoint count
             response = self.supabase.table('langgraph_checkpoints').select('id', count='exact').execute()
             total_count = response.count if hasattr(response, 'count') else len(response.data)
             
             return {
                 "status": "active",
-                "type": "supabase_rest_api",
+                "type": "simple_supabase",
                 "total_checkpoints": total_count,
-                "backend": "supabase"
+                "backend": "supabase_simplified"
             }
             
         except Exception as e:
@@ -1547,20 +1424,20 @@ class SupabaseCheckpointer:
             return {"status": "error", "total_checkpoints": 0}
 
 async def create_checkpoint_saver():
-    """Create a Supabase REST API checkpoint saver for state persistence."""
+    """Create a simplified Supabase checkpoint saver for state persistence."""
     try:
         # Check if we have Supabase credentials
         supabase_url = os.getenv("SUPABASE_URL")
         supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
         
         if supabase_url and supabase_key:
-            logger.info("Creating Supabase REST API checkpointer")
+            logger.info("Creating simplified Supabase checkpointer")
             
-            # Try to create the checkpointer
-            checkpointer = SupabaseCheckpointer()
+            # Try to create the simplified checkpointer
+            checkpointer = SimpleSupabaseCheckpointer()
             
             if checkpointer.supabase:
-                logger.info("Supabase REST API checkpoint saver initialized successfully")
+                logger.info("Simplified Supabase checkpoint saver initialized successfully")
                 return checkpointer
             else:
                 logger.warning("Supabase client initialization failed, falling back to memory saver")
@@ -1570,7 +1447,7 @@ async def create_checkpoint_saver():
             return MemorySaver()
         
     except Exception as e:
-        logger.error(f"Failed to create Supabase checkpoint saver: {e}")
+        logger.error(f"Failed to create simplified Supabase checkpoint saver: {e}")
         logger.info("Falling back to memory saver for checkpointing")
         return MemorySaver()
 

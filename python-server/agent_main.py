@@ -10,7 +10,7 @@ from langgraph.graph.message import add_messages
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.checkpoint.base import BaseCheckpointSaver, CheckpointTuple
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, date
 import pytz
 import json
 import os
@@ -730,6 +730,18 @@ async def create_event_tool(title: str, time_reference: str, duration_minutes: i
                 # Demo mode for LangGraph Studio
                 logger.info("Running in demo mode - no user context available")
                 
+                # Parse time reference using LLM for demo mode
+                llm = get_llm_instance()
+                if not llm:
+                    return "❌ LLM not available for time parsing"
+                
+                try:
+                    start_datetime, end_datetime = await parse_time_with_llm(time_reference, "UTC", llm, duration_minutes)
+                    if not start_datetime or not end_datetime:
+                        return f"❌ Could not parse time reference: {time_reference}. Please provide a clearer time like 'tomorrow at 2 PM' or 'June 15 at 10:30 AM'"
+                except Exception as parse_error:
+                    return f"❌ Error parsing time reference: {parse_error}"
+                
                 # Validate the datetime format
                 try:
                     start_dt = datetime.fromisoformat(start_datetime.replace('Z', '+00:00'))
@@ -1255,39 +1267,99 @@ class SimpleSupabaseCheckpointer:
             logger.error(f"Failed to initialize Supabase client: {e}")
             self.supabase = None
     
+    def _make_json_safe(self, obj):
+        """Recursively convert an object to be JSON serializable."""
+        if obj is None:
+            return None
+        elif isinstance(obj, (str, int, float, bool)):
+            return obj
+        elif isinstance(obj, (datetime, date)):
+            return obj.isoformat()
+        elif isinstance(obj, list):
+            return [self._make_json_safe(item) for item in obj]
+        elif isinstance(obj, dict):
+            return {str(key): self._make_json_safe(value) for key, value in obj.items()}
+        elif hasattr(obj, '__dict__'):
+            # For objects with __dict__, convert to dictionary
+            return self._make_json_safe(obj.__dict__)
+        else:
+            # For any other type, convert to string
+            return str(obj)
+    
     def _serialize_messages(self, messages: List[BaseMessage]) -> List[dict]:
         """Convert LangChain messages to simple dictionaries."""
+        if not messages:
+            return []
+        
         serialized = []
-        for msg in messages:
-            if isinstance(msg, HumanMessage):
-                msg_type = "human"
-            elif isinstance(msg, AIMessage):
-                msg_type = "ai"
-            elif isinstance(msg, SystemMessage):
-                msg_type = "system"
-            else:
-                msg_type = "unknown"
-            
-            serialized.append({
-                "type": msg_type,
-                "content": str(msg.content),
-                "timestamp": datetime.now().isoformat()
-            })
+        for i, msg in enumerate(messages):
+            try:
+                # Handle different message types
+                if isinstance(msg, HumanMessage):
+                    msg_type = "human"
+                elif isinstance(msg, AIMessage):
+                    msg_type = "ai"
+                elif isinstance(msg, SystemMessage):
+                    msg_type = "system"
+                else:
+                    msg_type = "unknown"
+                
+                # Safely extract content
+                content = ""
+                if hasattr(msg, 'content'):
+                    content = str(msg.content) if msg.content is not None else ""
+                
+                message_dict = {
+                    "type": msg_type,
+                    "content": content,
+                    "timestamp": datetime.now().isoformat(),
+                    "index": i
+                }
+                
+                # Add any additional data if present
+                if hasattr(msg, 'additional_kwargs') and msg.additional_kwargs:
+                    message_dict["additional_kwargs"] = self._make_json_safe(msg.additional_kwargs)
+                
+                serialized.append(message_dict)
+                
+            except Exception as e:
+                logger.warning(f"Error serializing message {i}: {e}")
+                # Add a fallback message
+                serialized.append({
+                    "type": "unknown",
+                    "content": f"[Error serializing message: {str(e)}]",
+                    "timestamp": datetime.now().isoformat(),
+                    "index": i
+                })
+        
         return serialized
     
     def _deserialize_messages(self, serialized_messages: List[dict]) -> List[BaseMessage]:
         """Convert simple dictionaries back to LangChain messages."""
+        if not serialized_messages:
+            return []
+        
         messages = []
         for msg_data in serialized_messages:
-            msg_type = msg_data.get("type", "unknown")
-            content = msg_data.get("content", "")
-            
-            if msg_type == "human":
-                messages.append(HumanMessage(content=content))
-            elif msg_type == "ai":
-                messages.append(AIMessage(content=content))
-            elif msg_type == "system":
-                messages.append(SystemMessage(content=content))
+            try:
+                msg_type = msg_data.get("type", "unknown")
+                content = msg_data.get("content", "")
+                
+                # Create the appropriate message type
+                if msg_type == "human":
+                    messages.append(HumanMessage(content=content))
+                elif msg_type == "ai":
+                    messages.append(AIMessage(content=content))
+                elif msg_type == "system":
+                    messages.append(SystemMessage(content=content))
+                else:
+                    # Default to HumanMessage for unknown types
+                    messages.append(HumanMessage(content=content))
+                    
+            except Exception as e:
+                logger.warning(f"Error deserializing message: {e}")
+                # Add a fallback message
+                messages.append(HumanMessage(content="[Error deserializing message]"))
         
         return messages
     
@@ -1296,25 +1368,52 @@ class SimpleSupabaseCheckpointer:
         if not checkpoint:
             return {}
         
-        # Handle LangGraph checkpoint format
-        channel_values = checkpoint.get("channel_values", {})
-        
-        # Extract messages - each field in SimpleState becomes its own channel
-        messages = channel_values.get("messages", [])
-        serialized_messages = self._serialize_messages(messages) if messages else []
-        
-        # Extract other essential data - these are separate channels in StateGraph
-        return {
-            "messages": serialized_messages,
-            "conversation_summary": channel_values.get("conversation_summary"),
-            "user_id": channel_values.get("user_id"),
-            "contact_id": channel_values.get("contact_id"),
-            "message_intent": channel_values.get("message_intent"),
-            "metadata": channel_values.get("metadata", {}),
-            "timestamp": checkpoint.get("ts", datetime.now().isoformat()),
-            "checkpoint_id": checkpoint.get("id"),
-            "version": checkpoint.get("v", 1)
-        }
+        try:
+            # Handle LangGraph checkpoint format
+            channel_values = checkpoint.get("channel_values", {})
+            
+            # Extract messages - each field in SimpleState becomes its own channel
+            messages = channel_values.get("messages", [])
+            serialized_messages = self._serialize_messages(messages) if messages else []
+            
+            # Safely extract other data, ensuring everything is JSON serializable
+            metadata = channel_values.get("metadata", {})
+            if isinstance(metadata, dict):
+                # Deep clean metadata to ensure JSON serializability
+                safe_metadata = self._make_json_safe(metadata)
+            else:
+                safe_metadata = {}
+            
+            # Extract other essential data - these are separate channels in StateGraph
+            simple_state = {
+                "messages": serialized_messages,
+                "conversation_summary": channel_values.get("conversation_summary"),
+                "user_id": channel_values.get("user_id"),
+                "contact_id": channel_values.get("contact_id"),
+                "message_intent": channel_values.get("message_intent"),
+                "metadata": safe_metadata,
+                "timestamp": checkpoint.get("ts", datetime.now().isoformat()),
+                "checkpoint_id": checkpoint.get("id"),
+                "version": checkpoint.get("v", 1)
+            }
+            
+            # Final validation - ensure everything is JSON serializable
+            return self._make_json_safe(simple_state)
+            
+        except Exception as e:
+            logger.error(f"Error extracting simple state: {e}")
+            # Return minimal safe state
+            return {
+                "messages": [],
+                "conversation_summary": None,
+                "user_id": None,
+                "contact_id": None,
+                "message_intent": None,
+                "metadata": {},
+                "timestamp": datetime.now().isoformat(),
+                "checkpoint_id": str(uuid.uuid4()),
+                "version": 1
+            }
     
     def _reconstruct_checkpoint(self, simple_state: dict) -> dict:
         """Reconstruct a full LangGraph-compatible checkpoint from simple state data."""
@@ -1463,18 +1562,29 @@ class SimpleSupabaseCheckpointer:
             if not thread_id:
                 return config
             
-            # Extract and simplify the checkpoint data
+            # Extract and simplify the checkpoint data with comprehensive error handling
             simple_state = self._extract_simple_state(checkpoint)
             
+            # Double-check that simple_state is JSON serializable
+            try:
+                json.dumps(simple_state)
+            except (TypeError, ValueError) as e:
+                logger.error(f"Simple state still not JSON serializable: {e}")
+                # Create a minimal safe state
+                simple_state = {
+                    "messages": [],
+                    "conversation_summary": None,
+                    "user_id": checkpoint.get("channel_values", {}).get("user_id"),
+                    "contact_id": checkpoint.get("channel_values", {}).get("contact_id"),
+                    "message_intent": None,
+                    "metadata": {},
+                    "timestamp": datetime.now().isoformat(),
+                    "checkpoint_id": str(uuid.uuid4()),
+                    "version": 1
+                }
+            
             # Ensure metadata is serializable and has required fields
-            safe_metadata = {}
-            if metadata:
-                for key, value in metadata.items():
-                    try:
-                        json.dumps(value)  # Test if serializable
-                        safe_metadata[key] = value
-                    except (TypeError, ValueError):
-                        safe_metadata[key] = str(value)  # Convert to string if not serializable
+            safe_metadata = self._make_json_safe(metadata) if metadata else {}
             
             # Ensure required metadata fields exist
             safe_metadata.setdefault('step', safe_metadata.get('step', 0))
@@ -1482,13 +1592,39 @@ class SimpleSupabaseCheckpointer:
             safe_metadata.setdefault('writes', None)
             safe_metadata.setdefault('parents', {})
             
+            # Final validation of metadata
+            try:
+                json.dumps(safe_metadata)
+            except (TypeError, ValueError) as e:
+                logger.error(f"Metadata still not JSON serializable: {e}")
+                safe_metadata = {
+                    'step': 0,
+                    'source': 'loop',
+                    'writes': None,
+                    'parents': {}
+                }
+            
             # Create checkpoint record with simple JSON data
-            checkpoint_record = {
-                'thread_id': thread_id,
-                'checkpoint_data': json.dumps(simple_state),  # Ensure it's JSON string
-                'metadata': json.dumps(safe_metadata),  # Ensure metadata is JSON string
-                'created_at': datetime.now().isoformat()
-            }
+            try:
+                checkpoint_record = {
+                    'thread_id': thread_id,
+                    'checkpoint_data': json.dumps(simple_state),
+                    'metadata': json.dumps(safe_metadata),
+                    'created_at': datetime.now().isoformat()
+                }
+            except (TypeError, ValueError) as e:
+                logger.error(f"Final serialization failed: {e}")
+                # Create minimal checkpoint record
+                checkpoint_record = {
+                    'thread_id': thread_id,
+                    'checkpoint_data': json.dumps({
+                        "messages": [],
+                        "error": f"Serialization failed: {str(e)}",
+                        "timestamp": datetime.now().isoformat()
+                    }),
+                    'metadata': json.dumps({'step': 0, 'source': 'loop', 'writes': None, 'parents': {}}),
+                    'created_at': datetime.now().isoformat()
+                }
             
             # Insert or update checkpoint
             # First try to update existing, then insert if not found
@@ -1635,6 +1771,18 @@ class SimpleSupabaseCheckpointer:
         except Exception:
             return asyncio.run(self.adelete_thread(thread_id))
     
+    def _test_serialization(self, test_data):
+        """Test that data can be serialized and deserialized properly."""
+        try:
+            # Try to serialize to JSON
+            json_str = json.dumps(test_data)
+            # Try to deserialize from JSON
+            recovered_data = json.loads(json_str)
+            return True
+        except (TypeError, ValueError) as e:
+            logger.error(f"Serialization test failed: {e}")
+            return False
+    
     def get_stats(self) -> dict:
         """Get checkpointer statistics."""
         try:
@@ -1644,11 +1792,21 @@ class SimpleSupabaseCheckpointer:
             response = self.supabase.table('langgraph_checkpoints').select('id', count='exact').execute()
             total_count = response.count if hasattr(response, 'count') else len(response.data)
             
+            # Test serialization with sample data
+            test_messages = [
+                HumanMessage(content="Hello"),
+                AIMessage(content="Hi there!"),
+                SystemMessage(content="System message")
+            ]
+            serialized = self._serialize_messages(test_messages)
+            serialization_test = self._test_serialization(serialized)
+            
             return {
                 "status": "active",
                 "type": "simple_supabase",
                 "total_checkpoints": total_count,
-                "backend": "supabase_simplified"
+                "backend": "supabase_simplified",
+                "serialization_test": serialization_test
             }
             
         except Exception as e:

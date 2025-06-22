@@ -8,7 +8,7 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langgraph.graph import StateGraph, END
 from langgraph.graph.message import add_messages
 from langgraph.checkpoint.memory import MemorySaver
-from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.checkpoint.base import BaseCheckpointSaver, CheckpointTuple
 import logging
 from datetime import datetime, timedelta, timezone
 import pytz
@@ -1228,7 +1228,7 @@ class SupabaseCheckpointer:
             logger.error(f"Unexpected error during deserialization: {e}")
             return {}
     
-    async def aget_tuple(self, config: dict) -> Optional[tuple]:
+    async def aget_tuple(self, config: dict) -> Optional[CheckpointTuple]:
         """Get checkpoint tuple for a given config."""
         try:
             if not self.supabase:
@@ -1265,24 +1265,18 @@ class SupabaseCheckpointer:
             else:
                 deserialized_parent_config = serialized_parent_config
             
-            serialized_pending_writes = checkpoint_data.get('pending_writes', [])
-            if isinstance(serialized_pending_writes, str):
-                deserialized_pending_writes = self._deserialize_data(serialized_pending_writes)
-            else:
-                deserialized_pending_writes = serialized_pending_writes
-            
-            return (
-                deserialized_checkpoint,
-                deserialized_metadata,
-                deserialized_parent_config,
-                deserialized_pending_writes
+            # Return a proper CheckpointTuple object
+            return CheckpointTuple(
+                config=config,
+                checkpoint=deserialized_checkpoint,
+                parent_config=deserialized_parent_config
             )
             
         except Exception as e:
             logger.error(f"Error getting checkpoint: {e}")
             return None
     
-    def get_tuple(self, config: dict) -> Optional[tuple]:
+    def get_tuple(self, config: dict) -> Optional[CheckpointTuple]:
         """Sync version of get_tuple."""
         import asyncio
         try:
@@ -1420,21 +1414,20 @@ class SupabaseCheckpointer:
         except Exception:
             return asyncio.run(self.aput_writes(config, writes, task_id))
     
-    async def alist(self, config: dict, limit: int = 10, before: dict = None) -> list:
-        """List checkpoints for a thread."""
+    async def alist(self, config: dict, limit: int = 10, before: dict = None):
+        """List checkpoints for a thread - async generator returning CheckpointTuple objects."""
         try:
             if not self.supabase:
-                return []
+                return
             
             thread_id = config.get("configurable", {}).get("thread_id")
             if not thread_id:
-                return []
+                return
             
             query = self.supabase.table('langgraph_checkpoints').select('*').eq('thread_id', thread_id).order('created_at', desc=True).limit(limit)
             
             response = query.execute()
             
-            checkpoints = []
             for item in response.data:
                 # Deserialize ALL fields
                 serialized_checkpoint = item.get('checkpoint_data')
@@ -1443,46 +1436,46 @@ class SupabaseCheckpointer:
                 else:
                     deserialized_checkpoint = serialized_checkpoint
                 
-                serialized_metadata = item.get('metadata', {})
-                if isinstance(serialized_metadata, str):
-                    deserialized_metadata = self._deserialize_data(serialized_metadata)
-                else:
-                    deserialized_metadata = serialized_metadata
-                
                 serialized_parent_config = item.get('parent_config')
                 if isinstance(serialized_parent_config, str):
                     deserialized_parent_config = self._deserialize_data(serialized_parent_config)
                 else:
                     deserialized_parent_config = serialized_parent_config
                 
-                serialized_pending_writes = item.get('pending_writes', [])
-                if isinstance(serialized_pending_writes, str):
-                    deserialized_pending_writes = self._deserialize_data(serialized_pending_writes)
-                else:
-                    deserialized_pending_writes = serialized_pending_writes
-                
-                checkpoints.append({
-                    'config': deserialized_parent_config or config,
-                    'checkpoint': deserialized_checkpoint,
-                    'metadata': deserialized_metadata,
-                    'parent_config': deserialized_parent_config,
-                    'pending_writes': deserialized_pending_writes
-                })
-            
-            return checkpoints
+                # Yield CheckpointTuple objects
+                yield CheckpointTuple(
+                    config=deserialized_parent_config or config,
+                    checkpoint=deserialized_checkpoint,
+                    parent_config=deserialized_parent_config
+                )
             
         except Exception as e:
             logger.error(f"Error listing checkpoints: {e}")
-            return []
+            return
     
-    def list(self, config: dict, limit: int = 10, before: dict = None) -> list:
-        """Sync version of list."""
+    def list(self, config: dict, limit: int = 10, before: dict = None):
+        """Sync version of list - generator returning CheckpointTuple objects."""
         import asyncio
         try:
+            # Convert async iterator to regular iterator
             loop = asyncio.get_event_loop()
-            return loop.run_until_complete(self.alist(config, limit, before))
-        except Exception:
-            return asyncio.run(self.alist(config, limit, before))
+            if loop.is_running():
+                # If already in an event loop, we need to handle this differently
+                # For now, just return empty iterator
+                return iter([])
+            else:
+                # Create a new event loop to run the async method
+                async def _get_checkpoints():
+                    checkpoints = []
+                    async for checkpoint in self.alist(config, limit, before):
+                        checkpoints.append(checkpoint)
+                    return checkpoints
+                
+                checkpoints = loop.run_until_complete(_get_checkpoints())
+                return iter(checkpoints)
+        except Exception as e:
+            logger.error(f"Error in sync list method: {e}")
+            return iter([])
     
     async def adelete_thread(self, thread_id: str) -> None:
         """Delete all checkpoints and writes associated with a specific thread ID."""

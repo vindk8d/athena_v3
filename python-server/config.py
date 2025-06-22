@@ -8,9 +8,14 @@ class Config:
     # OpenAI Configuration
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
     
-    # Supabase Configuration (optional, for future use)
-    SUPABASE_URL = os.getenv("NEXT_PUBLIC_SUPABASE_URL")
-    SUPABASE_ANON_KEY = os.getenv("NEXT_PUBLIC_SUPABASE_ANON_KEY")
+    # Supabase Configuration
+    SUPABASE_URL = os.getenv("SUPABASE_URL") or os.getenv("NEXT_PUBLIC_SUPABASE_URL")
+    SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY") or os.getenv("NEXT_PUBLIC_SUPABASE_ANON_KEY")
+    SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+    
+    # Database Configuration (for PostgreSQL checkpointing)
+    DATABASE_URL = os.getenv("DATABASE_URL")
+    POSTGRES_CONNECTION_STRING = os.getenv("POSTGRES_CONNECTION_STRING")
     
     # Server Configuration
     HOST = os.getenv("HOST", "0.0.0.0")

@@ -277,8 +277,10 @@ def get_supabase_client():
     supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
     
     if not supabase_url or not supabase_key:
+        logger.error(f"Supabase configuration missing - URL: {'✓' if supabase_url else '✗'}, Key: {'✓' if supabase_key else '✗'}")
         raise ValueError("Supabase URL and service role key are required")
     
+    logger.debug(f"Creating Supabase client with URL: {supabase_url[:50]}...")
     return create_client(supabase_url, supabase_key)
 
 def get_included_calendars(user_id: str) -> List[str]:
@@ -1293,43 +1295,77 @@ tools = [check_availability_tool, create_event_tool, get_events_tool, get_curren
          get_available_slots_for_period_tool]  # Removed convert_relative_time_tool and parse_specific_time_tool
 
 # Checkpoint configuration
+# NOTE: The system currently uses MemorySaver as the default checkpointer because:
+# 1. Supabase REST API credentials cannot be used for direct PostgreSQL connections
+# 2. LangGraph's AsyncPostgresSaver requires a direct PostgreSQL connection string
+# 3. For production persistence, set POSTGRES_CONNECTION_STRING or DATABASE_URL with actual PostgreSQL credentials
+# 4. The MemorySaver works fine for conversation state during the request lifecycle
+# 5. Conversation archiving to the messages table provides long-term persistence through Supabase REST API
+
 async def create_checkpoint_saver():
-    """Create a PostgreSQL checkpoint saver for state persistence using Supabase."""
+    """Create a PostgreSQL checkpoint saver for state persistence using Supabase.
+    
+    Note: This requires a direct PostgreSQL connection string, not the Supabase REST API credentials.
+    If PostgreSQL connection details are not available, falls back to MemorySaver.
+    """
     try:
-        # Try to get Supabase connection details
+        # Try to get direct PostgreSQL connection string first
+        postgres_connection_string = os.getenv("POSTGRES_CONNECTION_STRING") or os.getenv("DATABASE_URL")
+        
+        if postgres_connection_string:
+            logger.info("Using direct PostgreSQL connection string for checkpointing")
+            
+            # Create async connection
+            conn = await psycopg.AsyncConnection.connect(
+                postgres_connection_string,
+                autocommit=True,
+                prepare_threshold=0  # Disable prepared statements to avoid conflicts
+            )
+            
+            # Create checkpointer
+            checkpointer = AsyncPostgresSaver(conn)
+            await checkpointer.setup()
+            
+            logger.info("PostgreSQL checkpoint saver initialized successfully")
+            return checkpointer
+        
+        # Try Supabase credentials (though this approach has limitations)
         supabase_url = os.getenv("SUPABASE_URL")
         supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
         
-        if not supabase_url or not supabase_key:
-            logger.warning("Supabase credentials not found, falling back to memory saver")
-            return MemorySaver()
+        if supabase_url and supabase_key:
+            logger.info("Attempting to create PostgreSQL connection from Supabase credentials")
+            
+            # Extract project ID from Supabase URL
+            if "supabase.co" in supabase_url:
+                project_id = supabase_url.replace("https://", "").replace(".supabase.co", "")
+                
+                # Construct PostgreSQL connection string for Supabase
+                # Note: This uses the service role key as password, which may not work
+                connection_string = f"postgresql://postgres:{supabase_key}@db.{project_id}.supabase.co:5432/postgres"
+                
+                # Create async connection
+                conn = await psycopg.AsyncConnection.connect(
+                    connection_string,
+                    autocommit=True,
+                    prepare_threshold=0
+                )
+                
+                # Create checkpointer
+                checkpointer = AsyncPostgresSaver(conn)
+                await checkpointer.setup()
+                
+                logger.info("PostgreSQL checkpoint saver initialized successfully using Supabase")
+                return checkpointer
         
-        # Extract connection details from Supabase URL
-        # Supabase URL format: https://[project-id].supabase.co
-        # We need to construct the PostgreSQL connection string
-        project_id = supabase_url.replace("https://", "").replace(".supabase.co", "")
-        
-        # Construct PostgreSQL connection string for Supabase
-        # Note: You may need to adjust the port and database name based on your Supabase setup
-        connection_string = f"postgresql://postgres:{supabase_key}@db.{project_id}.supabase.co:5432/postgres"
-        
-        # Create async connection
-        conn = await psycopg.AsyncConnection.connect(
-            connection_string,
-            autocommit=True,
-            prepare_threshold=0  # Disable prepared statements to avoid conflicts
-        )
-        
-        # Create checkpointer
-        checkpointer = AsyncPostgresSaver(conn)
-        await checkpointer.setup()
-        
-        logger.info("PostgreSQL checkpoint saver initialized successfully")
-        return checkpointer
+        # If no valid connection details found, fall back to memory saver
+        logger.warning("No PostgreSQL connection details found, falling back to memory saver")
+        logger.info("For persistent checkpointing, set POSTGRES_CONNECTION_STRING or DATABASE_URL environment variable")
+        return MemorySaver()
         
     except Exception as e:
         logger.error(f"Failed to create PostgreSQL checkpoint saver: {e}")
-        logger.info("Falling back to memory saver")
+        logger.info("Falling back to memory saver for checkpointing")
         return MemorySaver()
 
 async def archive_conversation_to_messages_table(contact_id: str, user_id: str, messages: List[BaseMessage]):
@@ -1652,10 +1688,16 @@ Always double-check that dates and times make sense before proceeding.
         
         # Create checkpointer only if requested
         if use_checkpointer:
-            checkpointer = await create_checkpoint_saver()
-            return workflow.compile(checkpointer=checkpointer)
+            try:
+                checkpointer = await create_checkpoint_saver()
+                logger.info(f"Graph compiled with checkpointer: {type(checkpointer).__name__}")
+                return workflow.compile(checkpointer=checkpointer)
+            except Exception as e:
+                logger.error(f"Failed to create checkpointer, compiling without: {e}")
+                return workflow.compile()
         else:
             # For LangGraph Studio/API, don't use custom checkpointer
+            logger.info("Graph compiled without custom checkpointer")
             return workflow.compile()
     
     # Node implementations

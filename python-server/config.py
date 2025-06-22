@@ -2,18 +2,24 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
-# Get the root directory (parent of python-server)
-ROOT_DIR = Path(__file__).parent.parent
-ENV_FILE = ROOT_DIR / ".env"
+# Detect if we're in a production environment
+IS_PRODUCTION = os.getenv("RENDER") or os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("VERCEL") or os.getenv("HEROKU_APP_NAME")
 
-# Load environment variables from .env file in root directory
-if ENV_FILE.exists():
-    load_dotenv(ENV_FILE)
-    print(f"✅ Loaded environment variables from: {ENV_FILE}")
+if not IS_PRODUCTION:
+    # Development mode: Try to load from .env file
+    ROOT_DIR = Path(__file__).parent.parent
+    ENV_FILE = ROOT_DIR / ".env"
+    
+    if ENV_FILE.exists():
+        load_dotenv(ENV_FILE)
+        print(f"✅ Development: Loaded environment variables from: {ENV_FILE}")
+    else:
+        # Fallback: try to load from current directory
+        load_dotenv()
+        print(f"⚠️  Development: .env file not found at {ENV_FILE}, trying current directory")
 else:
-    # Fallback: try to load from current directory
-    load_dotenv()
-    print(f"⚠️  .env file not found at {ENV_FILE}, trying current directory")
+    # Production mode: Environment variables should already be set by the platform
+    print("✅ Production: Using platform-provided environment variables")
 
 class Config:
     # OpenAI Configuration

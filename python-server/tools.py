@@ -642,9 +642,11 @@ class CalendarService:
                 'location': location,
             }
             
-            # Add attendees if provided
+            # Add attendees if provided (filter out empty/invalid emails)
             if attendees:
-                event_body['attendees'] = [{'email': email} for email in attendees]
+                valid_emails = [email.strip() for email in attendees if email and email.strip()]
+                if valid_emails:
+                    event_body['attendees'] = [{'email': email} for email in valid_emails]
             
             # Insert the event into the calendar
             event = self.service.events().insert(
@@ -1040,17 +1042,22 @@ class CreateEventTool(BaseTool):
             
             service = get_calendar_service()
             
+            # Filter out empty/invalid attendee emails before passing to service
+            filtered_attendees = []
+            if attendee_emails:
+                filtered_attendees = [email.strip() for email in attendee_emails if email and email.strip()]
+            
             event = service.create_event(
                 primary_calendar, title, description, start_datetime, 
-                end_datetime, calendar_timezone, attendee_emails or [], location
+                end_datetime, calendar_timezone, filtered_attendees, location
             )
             
             result = f"✅ Meeting scheduled successfully on your calendar!\n"
             result += f"Title: {event['summary']}\n"
             result += f"Time: {event['start']} to {event['end']}\n"
             result += f"Event ID: {event['id']}\n"
-            if attendee_emails:
-                result += f"Attendees: {', '.join(attendee_emails)}\n"
+            if filtered_attendees:
+                result += f"Attendees: {', '.join(filtered_attendees)}\n"
             if location:
                 result += f"Location: {location}\n"
             if event.get('html_link'):

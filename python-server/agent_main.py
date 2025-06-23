@@ -506,8 +506,11 @@ class CalendarService:
                 'location': location,
             }
             
+            # Filter out empty/invalid email addresses
             if attendees:
-                event_body['attendees'] = [{'email': email} for email in attendees]
+                valid_emails = [email.strip() for email in attendees if email and email.strip()]
+                if valid_emails:
+                    event_body['attendees'] = [{'email': email} for email in valid_emails]
             
             event = self.service.events().insert(
                 calendarId=calendar_id,
@@ -731,10 +734,15 @@ async def create_event_tool(title: str, time_reference: str, duration_minutes: i
             
             service = get_calendar_service()
             
+            # Filter out empty/invalid attendee emails before passing to service
+            filtered_attendees = []
+            if attendee_emails:
+                filtered_attendees = [email.strip() for email in attendee_emails if email and email.strip()]
+            
             try:
                 event = service.create_event(
                     primary_calendar, title, description, start_datetime, 
-                    end_datetime, calendar_timezone, attendee_emails or [], location
+                    end_datetime, calendar_timezone, filtered_attendees, location
                 )
             except Exception as create_error:
                 # If event creation fails on the primary calendar, try the next writable calendar
@@ -755,7 +763,7 @@ async def create_event_tool(title: str, time_reference: str, duration_minutes: i
                                 fallback_timezone = get_calendar_timezone(user_id, fallback_calendar)
                                 event = service.create_event(
                                     fallback_calendar, title, description, start_datetime, 
-                                    end_datetime, fallback_timezone, attendee_emails or [], location
+                                    end_datetime, fallback_timezone, filtered_attendees, location
                                 )
                                 logger.info(f"Successfully created event on fallback calendar: {fallback_calendar}")
                                 break
@@ -773,8 +781,8 @@ async def create_event_tool(title: str, time_reference: str, duration_minutes: i
             result += f"Title: {event['summary']}\n"
             result += f"Time: {event['start']} to {event['end']}\n"
             result += f"Event ID: {event['id']}\n"
-            if attendee_emails:
-                result += f"Attendees: {', '.join(attendee_emails)}\n"
+            if filtered_attendees:
+                result += f"Attendees: {', '.join(filtered_attendees)}\n"
             if location:
                 result += f"Location: {location}\n"
             if event.get('html_link'):
@@ -1028,7 +1036,9 @@ def modify_event_tool(event_id: str, calendar_id: str = None, title: str = None,
             if location is not None:
                 update_body['location'] = location
             if attendee_emails is not None:
-                update_body['attendees'] = [{'email': email} for email in attendee_emails]
+                # Filter out empty/invalid attendee emails
+                valid_emails = [email.strip() for email in attendee_emails if email and email.strip()]
+                update_body['attendees'] = [{'email': email} for email in valid_emails]
             if not update_body:
                 return f"Current event details:\nTitle: {current_event.get('summary', 'No title')}\nStart: {current_event.get('start', {}).get('dateTime', 'No start time')}\nEnd: {current_event.get('end', {}).get('dateTime', 'No end time')}"
             updated_event = service.service.events().update(

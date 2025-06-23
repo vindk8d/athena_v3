@@ -2659,13 +2659,16 @@ New consolidated summary:"""
             colleague_name = colleague_info.get('name', 'there')
             colleague_nickname = colleague_info.get('nickname', colleague_name)
             
+            # Build nickname display outside f-string to avoid backslash issues
+            clarification_nickname_display = f"(nickname: {colleague_nickname})" if colleague_nickname != colleague_name else ""
+            
             # Add a system message to help the agent understand this is a clarification
             clarification_context = SystemMessage(content=f"""The colleague is providing additional information in response to a previous question you asked.
 
 You are Athena, executive assistant to {user_name} (refer to them as "{user_nickname}").
 
 COLLEAGUE CONTEXT:
-- The colleague's name is {colleague_name} {'(nickname: ' + colleague_nickname + ')' if colleague_nickname != colleague_name else ''}
+- The colleague's name is {colleague_name} {clarification_nickname_display}
 - Address them as {colleague_nickname} throughout the conversation
 
 CRITICAL WORKFLOW:
@@ -2705,16 +2708,25 @@ MEETING COORDINATION:
             # Check if this is the first interaction (no conversation summary)
             is_first_interaction = not state.get("conversation_summary")
             
+            # Build conditional strings outside the f-string to avoid backslash issues
+            nickname_display = f"(nickname: {colleague_nickname})" if colleague_nickname != colleague_name else ""
+            interaction_context = "This appears to be your first interaction with this colleague - introduce yourself appropriately" if is_first_interaction else "You have an existing relationship with this colleague"
+            
+            if is_first_interaction:
+                intro_text = f'- Introduce yourself: "Hi {colleague_nickname}! I\'m Athena, {user_nickname}\'s executive assistant."'
+            else:
+                intro_text = f'- Greet the colleague warmly: "Hi {colleague_nickname}!"'
+            
             general_context = SystemMessage(content=f"""The colleague is engaging in general conversation (greetings, casual chat, etc.). 
 
 CONTEXT:
 - You are Athena, executive assistant to {user_name} (refer to them as "{user_nickname}")
-- The colleague's name is {colleague_name} {'(nickname: ' + colleague_nickname + ')' if colleague_nickname != colleague_name else ''}
-- {'This appears to be your first interaction with this colleague - introduce yourself appropriately' if is_first_interaction else 'You have an existing relationship with this colleague'}
+- The colleague's name is {colleague_name} {nickname_display}
+- {interaction_context}
 - Be warm, friendly, and professional
 
 RESPONSE APPROACH:
-{'- Introduce yourself: "Hi ' + colleague_nickname + '! I\'m Athena, ' + user_nickname + '\'s executive assistant."' if is_first_interaction else '- Greet the colleague warmly: "Hi ' + colleague_nickname + '!"'}
+{intro_text}
 - Offer to help with scheduling or calendar coordination for {user_nickname}
 - Keep responses natural and conversational, not robotic
 - Be concise but helpful
@@ -2744,10 +2756,13 @@ Remember: You represent {user_nickname} professionally, so maintain their reputa
             
             # Add context for information extraction
             if message_intent in ["meeting_request", "calendar_inquiry", "availability_inquiry"]:
+                # Build nickname display outside f-string
+                colleague_nickname_display = f"(nickname: {colleague_nickname})" if colleague_nickname != colleague_name else ""
+                
                 extraction_context = SystemMessage(content=f"""You are coordinating calendar requests for {user_name} (refer to them as "{user_nickname}").
 
 COLLEAGUE CONTEXT:
-- The colleague's name is {colleague_name} {'(nickname: ' + colleague_nickname + ')' if colleague_nickname != colleague_name else ''}
+- The colleague's name is {colleague_name} {colleague_nickname_display}
 - Address them as {colleague_nickname} throughout the conversation
 
 CRITICAL WORKFLOW:

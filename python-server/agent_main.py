@@ -549,23 +549,45 @@ def set_current_thread_context(user_id: str, contact_id: str) -> str:
 
 def get_current_thread_id() -> str:
     """Get current thread ID."""
-    return _current_thread_id or "default_thread"
+    thread_id = _current_thread_id or "default_thread"
+    logger.info(f"🔍 CACHE DEBUG: get_current_thread_id() - returning '{thread_id}'")
+    return thread_id
 
 def initialize_user_context_cache(user_id: str, contact_id: str) -> None:
     """Initialize user context cache for the current thread."""
     thread_id = f"thread_{user_id}_{contact_id}"
     
+    logger.info(f"🔄 CACHE DEBUG: Initializing context cache for thread {thread_id}")
+    logger.info(f"🔄 CACHE DEBUG: Input - user_id='{user_id}', contact_id='{contact_id}'")
+    
     # Check if already cached for this thread
     if thread_id in _user_context_cache:
-        logger.info(f"Context already cached for thread {thread_id}")
+        logger.info(f"✅ CACHE DEBUG: Context already cached for thread {thread_id}")
+        cached_data = _user_context_cache[thread_id]
+        logger.info(f"✅ CACHE DEBUG: Cached data keys: {list(cached_data.keys())}")
+        logger.info(f"✅ CACHE DEBUG: Cached user_id='{cached_data.get('user_id')}', contact_id='{cached_data.get('contact_id')}'")
         return
     
     try:
+        logger.info(f"🔍 CACHE DEBUG: Fetching user details for user_id='{user_id}'")
         # Fetch all context data once
         user_details = get_user_details(user_id)
+        logger.info(f"✅ CACHE DEBUG: User details fetched successfully: {list(user_details.keys()) if user_details else 'EMPTY'}")
+        if user_details:
+            logger.info(f"✅ CACHE DEBUG: User name='{user_details.get('name')}', nickname='{user_details.get('nickname')}'")
+        
         user_timezone = user_details.get('default_timezone', 'UTC')
+        logger.info(f"✅ CACHE DEBUG: User timezone='{user_timezone}'")
+        
+        logger.info(f"🔍 CACHE DEBUG: Fetching colleague info for user_id='{user_id}', contact_id='{contact_id}'")
         colleague_info = get_colleague_info(user_id, contact_id)
+        logger.info(f"✅ CACHE DEBUG: Colleague info fetched successfully: {list(colleague_info.keys()) if colleague_info else 'EMPTY'}")
+        if colleague_info:
+            logger.info(f"✅ CACHE DEBUG: Colleague name='{colleague_info.get('name')}', nickname='{colleague_info.get('nickname')}'")
+        
+        logger.info(f"🔍 CACHE DEBUG: Fetching calendar IDs for user_id='{user_id}'")
         calendar_ids = get_included_calendars(user_id)
+        logger.info(f"✅ CACHE DEBUG: Calendar IDs fetched successfully: {len(calendar_ids)} calendars")
         
         # Cache everything for this thread
         _user_context_cache[thread_id] = {
@@ -578,10 +600,11 @@ def initialize_user_context_cache(user_id: str, contact_id: str) -> None:
             'thread_id': thread_id
         }
         
-        logger.info(f"Context cached for thread {thread_id}: timezone={user_timezone}, calendars={len(calendar_ids)}")
+        logger.info(f"✅ CACHE DEBUG: Context cached successfully for thread {thread_id}")
+        logger.info(f"✅ CACHE DEBUG: Final cache - timezone={user_timezone}, calendars={len(calendar_ids)}, user_details_keys={list(user_details.keys()) if user_details else 'EMPTY'}, colleague_info_keys={list(colleague_info.keys()) if colleague_info else 'EMPTY'}")
         
     except Exception as e:
-        logger.error(f"Error initializing context cache: {e}")
+        logger.error(f"❌ CACHE DEBUG: Error initializing context cache: {e}")
         # Set fallback values
         _user_context_cache[thread_id] = {
             'user_timezone': 'UTC',
@@ -592,36 +615,50 @@ def initialize_user_context_cache(user_id: str, contact_id: str) -> None:
             'contact_id': contact_id,
             'thread_id': thread_id
         }
+        logger.info(f"⚠️ CACHE DEBUG: Set fallback cache values for thread {thread_id}")
 
 def get_cached_context(thread_id: str = None) -> Dict[str, Any]:
     """Get cached context for the specified or current thread."""
     if not thread_id:
         thread_id = get_current_thread_id()
     
-    return _user_context_cache.get(thread_id, {})
+    logger.info(f"🔍 CACHE DEBUG: get_cached_context() - thread_id='{thread_id}'")
+    logger.info(f"🔍 CACHE DEBUG: Available threads in cache: {list(_user_context_cache.keys())}")
+    
+    context = _user_context_cache.get(thread_id, {})
+    logger.info(f"🔍 CACHE DEBUG: Context found: {bool(context)}, keys: {list(context.keys()) if context else 'EMPTY'}")
+    
+    return context
 
 def get_user_id_from_cache() -> str:
     """Get user_id from cache."""
     context = get_cached_context()
     user_id = context.get('user_id')
+    logger.info(f"🔍 CACHE DEBUG: get_user_id_from_cache() - context keys: {list(context.keys())}, user_id='{user_id}'")
     if user_id:
         return user_id
     
     # Fallback to global user_id if available
     try:
-        return get_current_user_id()
+        fallback_user_id = get_current_user_id()
+        logger.info(f"⚠️ CACHE DEBUG: Using fallback user_id='{fallback_user_id}'")
+        return fallback_user_id
     except ValueError:
+        logger.warning(f"❌ CACHE DEBUG: No user_id available in cache or global state")
         return ""
 
 def get_contact_id_from_cache() -> str:
     """Get contact_id from cache."""
     context = get_cached_context()
-    return context.get('contact_id', "")
+    contact_id = context.get('contact_id', "")
+    logger.info(f"🔍 CACHE DEBUG: get_contact_id_from_cache() - context keys: {list(context.keys())}, contact_id='{contact_id}'")
+    return contact_id
 
 def get_timezone_from_cache() -> str:
     """Get user timezone from cache, fallback to database if needed."""
     context = get_cached_context()
     user_timezone = context.get('user_timezone')
+    logger.info(f"🔍 CACHE DEBUG: get_timezone_from_cache() - context keys: {list(context.keys())}, user_timezone='{user_timezone}'")
     if user_timezone:
         return user_timezone
     
@@ -629,9 +666,12 @@ def get_timezone_from_cache() -> str:
     try:
         user_id = get_user_id_from_cache()
         if user_id:
-            return get_user_timezone(user_id)
+            fallback_timezone = get_user_timezone(user_id)
+            logger.info(f"⚠️ CACHE DEBUG: Using fallback timezone='{fallback_timezone}' from DB")
+            return fallback_timezone
     except Exception:
         pass
+    logger.warning(f"❌ CACHE DEBUG: Using default timezone 'UTC'")
     return "UTC"
 
 def get_calendar_ids_from_cache() -> List[str]:
@@ -750,23 +790,35 @@ def get_current_user_id() -> str:
 def get_colleague_info(user_id: str, contact_id: str) -> Dict[str, Any]:
     """Get colleague information from the contacts table."""
     try:
+        logger.info(f"🔍 CACHE DEBUG: get_colleague_info() called with user_id='{user_id}', contact_id='{contact_id}'")
+        
+        if not contact_id or contact_id.strip() == "":
+            logger.warning(f"❌ CACHE DEBUG: Empty or invalid contact_id provided")
+            return {}
+        
         supabase = get_supabase_client()
         if not supabase:
             logger.error("Could not initialize Supabase client")
             return {}
         
+        logger.info(f"🔍 CACHE DEBUG: Querying contacts table for contact_id='{contact_id}'")
         response = supabase.table('contacts').select('name, nickname, email').eq('id', contact_id).execute()
+        logger.info(f"✅ CACHE DEBUG: Database response received, data count: {len(response.data) if response.data else 0}")
         
         if response.data and response.data[0]:
             colleague_data = response.data[0]
-            return {
+            result = {
                 'name': colleague_data.get('name', ''),
                 'nickname': colleague_data.get('nickname', '') or colleague_data.get('name', ''),
                 'email': colleague_data.get('email', '')
             }
+            logger.info(f"✅ CACHE DEBUG: Colleague info found: {result}")
+            return result
+        else:
+            logger.warning(f"⚠️ CACHE DEBUG: No colleague data found for contact_id='{contact_id}'")
         return {}
     except Exception as e:
-        logger.error(f"Error fetching colleague info: {e}")
+        logger.error(f"❌ CACHE DEBUG: Error fetching colleague info: {e}")
         return {}
 
 def get_user_details(user_id: str) -> Dict[str, Any]:
@@ -2824,12 +2876,15 @@ New consolidated summary:"""
             messages = state["messages"].copy()
             
             # Get user information for personalized responses
-            user_details = state.get("metadata", {}).get("user_details", {})
+            user_details = get_user_details_from_cache()
             user_name = user_details.get("name", "the user")
             user_nickname = user_details.get("nickname", user_name)
+            logger.info(f"🔍 CACHE DEBUG: Clarification context - user_name='{user_name}', user_nickname='{user_nickname}'")
             
-            # Get colleague information
-            colleague_info = get_colleague_info(state.get("user_id", ""), state.get("contact_id", ""))
+            # Get colleague information  
+            logger.info(f"🔍 CACHE DEBUG: Fetching colleague info in clarification_answer context")
+            colleague_info = get_colleague_info_from_cache()
+            logger.info(f"✅ CACHE DEBUG: Colleague info result: {colleague_info}")
             colleague_name = colleague_info.get('name', 'there')
             colleague_nickname = colleague_info.get('nickname', colleague_name)
             
@@ -2870,12 +2925,15 @@ MEETING COORDINATION:
             messages = state["messages"][-3:] if len(state["messages"]) > 1 else state["messages"].copy()
             
             # Get user and colleague information for personalized responses
-            user_details = state.get("metadata", {}).get("user_details", {})
+            user_details = get_user_details_from_cache()
             user_name = user_details.get("name", "the user")
             user_nickname = user_details.get("nickname", user_name)
+            logger.info(f"🔍 CACHE DEBUG: General conversation - user_name='{user_name}', user_nickname='{user_nickname}'")
             
             # Get colleague information
-            colleague_info = get_colleague_info(state.get("user_id", ""), state.get("contact_id", ""))
+            logger.info(f"🔍 CACHE DEBUG: Fetching colleague info in general_conversation context")
+            colleague_info = get_colleague_info_from_cache()
+            logger.info(f"✅ CACHE DEBUG: Colleague info result: {colleague_info}")
             colleague_name = colleague_info.get('name', 'there')
             colleague_nickname = colleague_info.get('nickname', colleague_name)
             
@@ -2919,12 +2977,15 @@ Remember: You represent {user_nickname} professionally, so maintain their reputa
             messages = state["messages"][-5:] if len(state["messages"]) > 1 else state["messages"].copy()
             
             # Get user and colleague information for personalized responses
-            user_details = state.get("metadata", {}).get("user_details", {})
+            user_details = get_user_details_from_cache()
             user_name = user_details.get("name", "the user")
             user_nickname = user_details.get("nickname", user_name)
+            logger.info(f"🔍 CACHE DEBUG: Other intents - user_name='{user_name}', user_nickname='{user_nickname}'")
             
             # Get colleague information
-            colleague_info = get_colleague_info(state.get("user_id", ""), state.get("contact_id", ""))
+            logger.info(f"🔍 CACHE DEBUG: Fetching colleague info in other intents context")
+            colleague_info = get_colleague_info_from_cache()
+            logger.info(f"✅ CACHE DEBUG: Colleague info result: {colleague_info}")
             colleague_name = colleague_info.get('name', 'there')
             colleague_nickname = colleague_info.get('nickname', colleague_name)
             

@@ -817,6 +817,8 @@ class GetEventsTool(BaseTool):
                     result += f"  Location: {event['location']}\n"
                 if event['attendees']:
                     result += f"  Attendees: {', '.join(event['attendees'])}\n"
+                if event.get('html_link'):
+                    result += f"  📅 View/Edit Event: {event['html_link']}\n"
             
             return result
             
@@ -1061,7 +1063,7 @@ class CreateEventTool(BaseTool):
             if location:
                 result += f"Location: {location}\n"
             if event.get('html_link'):
-                result += f"Calendar link: {event['html_link']}\n"
+                result += f"📅 View/Edit Event: {event['html_link']}\n"
             
             return result
             

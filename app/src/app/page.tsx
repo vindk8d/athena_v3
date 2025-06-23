@@ -11,15 +11,52 @@ import {
   CalendarListEntry 
 } from '../lib/calendar-management'
 
+// Contact interface based on the database schema
+interface Contact {
+  id: string
+  name: string
+  email?: string
+  telegram_id?: string
+  telegram_onboard_token?: string
+  first_name?: string
+  last_name?: string
+  nickname?: string
+  user_contact_id?: string
+  created_at: string
+  updated_at: string
+}
+
 export default function Home() {
   const router = useRouter()
   const supabase = createClient()
   const [user, setUser] = useState<User | null>(null)
+  const [userDetails, setUserDetails] = useState<any>(null)
   const [loading, setLoading] = useState(true)
   const [calendarConnected, setCalendarConnected] = useState(false)
   const [calendars, setCalendars] = useState<CalendarListEntry[]>([])
   const [syncingCalendars, setSyncingCalendars] = useState(false)
   const [syncMessage, setSyncMessage] = useState('')
+  
+  // Contacts management state
+  const [contacts, setContacts] = useState<Contact[]>([])
+  const [loadingContacts, setLoadingContacts] = useState(false)
+  const [editingContactId, setEditingContactId] = useState<string | null>(null)
+  const [isAddingContact, setIsAddingContact] = useState(false)
+  const [editForm, setEditForm] = useState<Partial<Contact>>({})
+  const [newContactForm, setNewContactForm] = useState<Partial<Contact>>({
+    name: '',
+    email: '',
+    first_name: '',
+    last_name: '',
+    nickname: ''
+  })
+  
+  // Invitation state management
+  const [inviteStates, setInviteStates] = useState<Record<string, {
+    isGenerating: boolean
+    inviteLink: string | null
+    showCopied: boolean
+  }>>({})
 
   useEffect(() => {
     const checkUser = async () => {
@@ -29,6 +66,21 @@ export default function Home() {
         return
       }
       setUser(session.user)
+      
+      // Get user details
+      try {
+        const { data: userDetailsData, error } = await supabase
+          .from('user_details')
+          .select('*')
+          .eq('user_id', session.user.id)
+          .maybeSingle()
+        
+        if (userDetailsData) {
+          setUserDetails(userDetailsData)
+        }
+      } catch (error) {
+        console.error('Error fetching user details:', error)
+      }
       
       // Check if calendar access is available by querying user_auth_credentials
       try {
@@ -60,6 +112,36 @@ export default function Home() {
     }
     checkUser()
   }, [router, supabase])
+
+  // Load contacts when userDetails is available
+  useEffect(() => {
+    if (userDetails?.id) {
+      loadContacts()
+    }
+  }, [userDetails])
+
+  const loadContacts = async () => {
+    if (!userDetails?.id) return
+    
+    setLoadingContacts(true)
+    try {
+      const { data: contactsData, error } = await supabase
+        .from('contacts')
+        .select('*')
+        .eq('user_contact_id', userDetails.id)
+        .order('name', { ascending: true })
+      
+      if (error) {
+        console.error('Error loading contacts:', error)
+      } else {
+        setContacts(contactsData || [])
+      }
+    } catch (error) {
+      console.error('Error loading contacts:', error)
+    } finally {
+      setLoadingContacts(false)
+    }
+  }
 
   const syncCalendarsAndLoad = async (userId: string) => {
     setSyncingCalendars(true)
@@ -102,6 +184,197 @@ export default function Home() {
       )
     } else {
       console.error('Error updating calendar inclusion:', result.error)
+    }
+  }
+
+  const handleEditContact = (contact: Contact) => {
+    setEditingContactId(contact.id)
+    setEditForm(contact)
+  }
+
+  const handleCancelEdit = () => {
+    setEditingContactId(null)
+    setEditForm({})
+  }
+
+  const handleSaveContact = async () => {
+    if (!editingContactId) return
+    
+    try {
+      const { error } = await supabase
+        .from('contacts')
+        .update({
+          name: editForm.name,
+          email: editForm.email,
+          first_name: editForm.first_name,
+          last_name: editForm.last_name,
+          nickname: editForm.nickname,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', editingContactId)
+      
+      if (error) {
+        console.error('Error updating contact:', error)
+      } else {
+        // Update local state
+        setContacts(prev => 
+          prev.map(contact => 
+            contact.id === editingContactId 
+              ? { ...contact, ...editForm }
+              : contact
+          )
+        )
+        setEditingContactId(null)
+        setEditForm({})
+      }
+    } catch (error) {
+      console.error('Error saving contact:', error)
+    }
+  }
+
+  const handleAddContact = async () => {
+    if (!userDetails?.id || !newContactForm.name) return
+    
+    try {
+      const { data, error } = await supabase
+        .from('contacts')
+        .insert({
+          name: newContactForm.name,
+          email: newContactForm.email,
+          first_name: newContactForm.first_name,
+          last_name: newContactForm.last_name,
+          nickname: newContactForm.nickname,
+          user_contact_id: userDetails.id,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        })
+        .select()
+        .single()
+      
+      if (error) {
+        console.error('Error adding contact:', error)
+      } else {
+        setContacts(prev => [...prev, data])
+        setNewContactForm({
+          name: '',
+          email: '',
+          first_name: '',
+          last_name: '',
+          nickname: ''
+        })
+        setIsAddingContact(false)
+      }
+    } catch (error) {
+      console.error('Error adding contact:', error)
+    }
+  }
+
+  const generateInviteToken = () => {
+    // Generate a UUID v4 token
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+      const r = Math.random() * 16 | 0
+      const v = c == 'x' ? r : (r & 0x3 | 0x8)
+      return v.toString(16)
+    })
+  }
+
+  const handleGenerateTelegramInvite = async (contact: Contact) => {
+    // Set generating state
+    setInviteStates(prev => ({
+      ...prev,
+      [contact.id]: {
+        isGenerating: true,
+        inviteLink: null,
+        showCopied: false
+      }
+    }))
+
+    try {
+      // Generate a unique onboard token
+      const onboardToken = generateInviteToken()
+      
+      // Update the contact with the onboard token
+      const { error } = await supabase
+        .from('contacts')
+        .update({
+          telegram_onboard_token: onboardToken,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', contact.id)
+
+      if (error) {
+        console.error('Error updating contact with onboard token:', error)
+        throw error
+      }
+
+      // Generate the Telegram invite link with the token
+      const botUsername = process.env.NEXT_PUBLIC_TELEGRAM_BOT_USERNAME || 'athena_ea_bot'
+      const telegramLink = `https://t.me/${botUsername}?start=onboard_${onboardToken}`
+
+      // Update local state
+      setContacts(prev => 
+        prev.map(c => 
+          c.id === contact.id 
+            ? { ...c, telegram_onboard_token: onboardToken }
+            : c
+        )
+      )
+
+      // Set the invite link state
+      setInviteStates(prev => ({
+        ...prev,
+        [contact.id]: {
+          isGenerating: false,
+          inviteLink: telegramLink,
+          showCopied: false
+        }
+      }))
+
+    } catch (error) {
+      console.error('Error generating invite:', error)
+      setInviteStates(prev => ({
+        ...prev,
+        [contact.id]: {
+          isGenerating: false,
+          inviteLink: null,
+          showCopied: false
+        }
+      }))
+      alert('Failed to generate invite link. Please try again.')
+    }
+  }
+
+  const handleCopyInviteLink = async (contact: Contact) => {
+    const inviteState = inviteStates[contact.id]
+    if (!inviteState?.inviteLink) return
+
+    try {
+      await navigator.clipboard.writeText(inviteState.inviteLink)
+      
+      // Show copied state
+      setInviteStates(prev => ({
+        ...prev,
+        [contact.id]: {
+          ...prev[contact.id],
+          showCopied: true
+        }
+      }))
+
+      // Reset copied state after 2 seconds
+      setTimeout(() => {
+        setInviteStates(prev => ({
+          ...prev,
+          [contact.id]: {
+            ...prev[contact.id],
+            showCopied: false
+          }
+        }))
+      }, 2000)
+
+    } catch (error) {
+      // Fallback for browsers that don't support clipboard API
+      const message = `Hi ${contact.name}! You can chat with my assistant here: ${inviteState.inviteLink}`
+      prompt(`Copy and share this message with ${contact.name}:`, message)
     }
   }
 
@@ -242,6 +515,257 @@ export default function Home() {
               )}
             </div>
           )}
+
+          {/* Contacts Management */}
+          <div className="p-6 rounded-lg border border-gray-200 bg-white dark:bg-neutral-900 dark:text-white shadow-sm">
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-xl font-semibold text-black dark:text-white">Contacts Management</h2>
+              <button
+                onClick={() => loadContacts()}
+                disabled={loadingContacts}
+                className="bg-green-500 hover:bg-green-700 disabled:bg-gray-400 text-white font-bold py-2 px-4 rounded text-sm"
+              >
+                {loadingContacts ? 'Loading...' : 'Refresh Contacts'}
+              </button>
+            </div>
+            
+            <p className="text-sm text-black dark:text-white mb-4">
+              Manage your contacts for scheduling meetings through Athena:
+            </p>
+            
+            {contacts.length === 0 ? (
+              <div className="text-black dark:text-white text-center py-4">
+                No contacts found. Add your first contact below.
+              </div>
+            ) : (
+              <div className="space-y-3 mb-4">
+                {contacts.map((contact) => (
+                  <div key={contact.id} className="flex items-center justify-between p-3 border rounded bg-white dark:bg-neutral-900 hover:bg-gray-50 dark:hover:bg-neutral-800">
+                    <div className="flex-1">
+                      {editingContactId === contact.id ? (
+                        <div className="space-y-2">
+                          <input
+                            type="text"
+                            value={editForm.name || ''}
+                            onChange={(e) => setEditForm(prev => ({ ...prev, name: e.target.value }))}
+                            placeholder="Full Name *"
+                            className="w-full p-2 border rounded text-black dark:text-white bg-white dark:bg-neutral-800 dark:border-neutral-700"
+                          />
+                          <div className="grid grid-cols-2 gap-2">
+                            <input
+                              type="text"
+                              value={editForm.first_name || ''}
+                              onChange={(e) => setEditForm(prev => ({ ...prev, first_name: e.target.value }))}
+                              placeholder="First Name"
+                              className="p-2 border rounded text-black dark:text-white bg-white dark:bg-neutral-800 dark:border-neutral-700"
+                            />
+                            <input
+                              type="text"
+                              value={editForm.last_name || ''}
+                              onChange={(e) => setEditForm(prev => ({ ...prev, last_name: e.target.value }))}
+                              placeholder="Last Name"
+                              className="p-2 border rounded text-black dark:text-white bg-white dark:bg-neutral-800 dark:border-neutral-700"
+                            />
+                          </div>
+                          <input
+                            type="email"
+                            value={editForm.email || ''}
+                            onChange={(e) => setEditForm(prev => ({ ...prev, email: e.target.value }))}
+                            placeholder="Email"
+                            className="w-full p-2 border rounded text-black dark:text-white bg-white dark:bg-neutral-800 dark:border-neutral-700"
+                          />
+                          <input
+                            type="text"
+                            value={editForm.nickname || ''}
+                            onChange={(e) => setEditForm(prev => ({ ...prev, nickname: e.target.value }))}
+                            placeholder="Nickname"
+                            className="w-full p-2 border rounded text-black dark:text-white bg-white dark:bg-neutral-800 dark:border-neutral-700"
+                          />
+                        </div>
+                      ) : (
+                        <div>
+                          <div className="font-medium text-black dark:text-white">
+                            {contact.name}
+                            {contact.nickname && contact.nickname !== contact.name && (
+                              <span className="text-sm text-gray-600 dark:text-gray-400 ml-2">({contact.nickname})</span>
+                            )}
+                          </div>
+                          <div className="text-sm text-gray-600 dark:text-gray-400">
+                            {contact.email && (
+                              <span>{contact.email}</span>
+                            )}
+                            {contact.first_name && contact.last_name && (
+                              <span className="ml-2">• {contact.first_name} {contact.last_name}</span>
+                            )}
+                            {contact.telegram_id && (
+                              <span className="ml-2 text-green-600">• Telegram Connected</span>
+                            )}
+                                                     </div>
+                         </div>
+                       )}
+                       
+                       {/* Show invite link if generated */}
+                       {inviteStates[contact.id]?.inviteLink && (
+                         <div className="mt-2 p-2 bg-blue-50 dark:bg-blue-900/20 rounded border border-blue-200 dark:border-blue-800">
+                           <div className="text-xs text-blue-700 dark:text-blue-300 mb-1">
+                             Telegram Invite Link:
+                           </div>
+                           <div className="text-sm font-mono text-blue-800 dark:text-blue-200 break-all">
+                             {inviteStates[contact.id].inviteLink}
+                           </div>
+                         </div>
+                       )}
+                     </div>
+                                         <div className="flex items-center space-x-2 ml-4">
+                       {(() => {
+                         const inviteState = inviteStates[contact.id]
+                         const hasInviteLink = inviteState?.inviteLink
+                         const isGenerating = inviteState?.isGenerating
+                         const showCopied = inviteState?.showCopied
+
+                         if (hasInviteLink) {
+                           return (
+                             <button
+                               onClick={() => handleCopyInviteLink(contact)}
+                               className={`${
+                                 showCopied 
+                                   ? 'bg-green-500 hover:bg-green-700' 
+                                   : 'bg-blue-500 hover:bg-blue-700'
+                               } text-white font-bold py-1 px-3 rounded text-sm flex items-center space-x-1`}
+                               title={showCopied ? "Copied!" : "Copy Invite Link"}
+                             >
+                               <span>{showCopied ? '✓' : '📋'}</span>
+                               <span>{showCopied ? 'Copied' : 'Copy Link'}</span>
+                             </button>
+                           )
+                         } else {
+                           return (
+                             <button
+                               onClick={() => handleGenerateTelegramInvite(contact)}
+                               disabled={isGenerating}
+                               className="bg-blue-500 hover:bg-blue-700 disabled:bg-gray-400 text-white font-bold py-1 px-3 rounded text-sm flex items-center space-x-1"
+                               title="Generate Telegram Invite"
+                             >
+                               <span>📱</span>
+                               <span>{isGenerating ? 'Generating...' : 'Invite'}</span>
+                             </button>
+                           )
+                         }
+                       })()}
+                      {editingContactId === contact.id ? (
+                        <div className="flex space-x-1">
+                                                     <button
+                             onClick={handleSaveContact}
+                             className="bg-green-500 hover:bg-green-700 text-white font-bold py-1 px-3 rounded text-sm flex items-center space-x-1"
+                             title="Save Changes"
+                           >
+                             <span>✓</span>
+                             <span>Save</span>
+                           </button>
+                           <button
+                             onClick={handleCancelEdit}
+                             className="bg-gray-500 hover:bg-gray-700 text-white font-bold py-1 px-3 rounded text-sm flex items-center space-x-1"
+                             title="Cancel Edit"
+                           >
+                             <span>✕</span>
+                             <span>Cancel</span>
+                           </button>
+                        </div>
+                      ) : (
+                                                 <button
+                           onClick={() => handleEditContact(contact)}
+                           className="bg-orange-500 hover:bg-orange-700 text-white font-bold py-1 px-3 rounded text-sm flex items-center space-x-1"
+                           title="Edit Contact"
+                         >
+                           <span>✏️</span>
+                           <span>Edit</span>
+                         </button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Add Contact Section */}
+            {isAddingContact ? (
+              <div className="border rounded p-4 bg-gray-50 dark:bg-neutral-800">
+                <h3 className="text-lg font-medium text-black dark:text-white mb-3">Add New Contact</h3>
+                <div className="space-y-2">
+                  <input
+                    type="text"
+                    value={newContactForm.name || ''}
+                    onChange={(e) => setNewContactForm(prev => ({ ...prev, name: e.target.value }))}
+                    placeholder="Full Name *"
+                    className="w-full p-2 border rounded text-black dark:text-white bg-white dark:bg-neutral-700 dark:border-neutral-600"
+                  />
+                  <div className="grid grid-cols-2 gap-2">
+                    <input
+                      type="text"
+                      value={newContactForm.first_name || ''}
+                      onChange={(e) => setNewContactForm(prev => ({ ...prev, first_name: e.target.value }))}
+                      placeholder="First Name"
+                      className="p-2 border rounded text-black dark:text-white bg-white dark:bg-neutral-700 dark:border-neutral-600"
+                    />
+                    <input
+                      type="text"
+                      value={newContactForm.last_name || ''}
+                      onChange={(e) => setNewContactForm(prev => ({ ...prev, last_name: e.target.value }))}
+                      placeholder="Last Name"
+                      className="p-2 border rounded text-black dark:text-white bg-white dark:bg-neutral-700 dark:border-neutral-600"
+                    />
+                  </div>
+                  <input
+                    type="email"
+                    value={newContactForm.email || ''}
+                    onChange={(e) => setNewContactForm(prev => ({ ...prev, email: e.target.value }))}
+                    placeholder="Email"
+                    className="w-full p-2 border rounded text-black dark:text-white bg-white dark:bg-neutral-700 dark:border-neutral-600"
+                  />
+                  <input
+                    type="text"
+                    value={newContactForm.nickname || ''}
+                    onChange={(e) => setNewContactForm(prev => ({ ...prev, nickname: e.target.value }))}
+                    placeholder="Nickname"
+                    className="w-full p-2 border rounded text-black dark:text-white bg-white dark:bg-neutral-700 dark:border-neutral-600"
+                  />
+                </div>
+                <div className="flex space-x-2 mt-4">
+                                     <button
+                     onClick={handleAddContact}
+                     disabled={!newContactForm.name}
+                     className="bg-green-500 hover:bg-green-700 disabled:bg-gray-400 text-white font-bold py-2 px-4 rounded text-sm flex items-center space-x-1"
+                   >
+                     <span>✓</span>
+                     <span>Add Contact</span>
+                   </button>
+                   <button
+                     onClick={() => {
+                       setIsAddingContact(false)
+                       setNewContactForm({
+                         name: '',
+                         email: '',
+                         first_name: '',
+                         last_name: '',
+                         nickname: ''
+                       })
+                     }}
+                     className="bg-gray-500 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded text-sm flex items-center space-x-1"
+                   >
+                     <span>✕</span>
+                     <span>Cancel</span>
+                   </button>
+                </div>
+              </div>
+            ) : (
+              <button
+                onClick={() => setIsAddingContact(true)}
+                className="w-full bg-blue-500 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded text-sm border-2 border-dashed border-blue-300 dark:border-blue-600"
+              >
+                + Add New Contact
+              </button>
+            )}
+          </div>
 
           <button
             onClick={handleSignOut}

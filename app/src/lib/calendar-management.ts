@@ -24,7 +24,8 @@ export interface CalendarListEntry {
   updated_at: string
 }
 
-const PYTHON_BACKEND_URL = process.env.PYTHON_SERVER_URL || 'https://athena-v3-1.onrender.com';
+// Environment-aware backend URL configuration
+const PYTHON_BACKEND_URL = process.env.PYTHON_SERVER_URL || (process.env.NODE_ENV === 'production' ? 'https://athena-v3-1.onrender.com' : 'http://localhost:8000');
 
 /**
  * Sync user's calendars by calling the Python backend

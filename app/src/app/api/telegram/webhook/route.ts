@@ -76,6 +76,7 @@ export async function POST(request: Request) {
       let contactId = null
       let userDetails = null
       let userId = null
+      let isOnboardingMessage = false
 
       // Always initialize supabase client
       const supabase = await createClient()
@@ -110,7 +111,51 @@ export async function POST(request: Request) {
         userId = userDetailsData.user_id
         console.log(`Acting as executive assistant for user: ${userDetails.name}`)
 
-        if (telegramUserId) {
+        // Check if this is an onboarding message with a token
+        if (messageText?.startsWith('/start onboard_')) {
+          const onboardToken = messageText.replace('/start onboard_', '').trim()
+          console.log(`Processing onboarding with token: ${onboardToken}`)
+          
+          try {
+            // Find the contact with this onboard token
+            const { data: onboardContact, error: onboardError } = await supabase
+              .from('contacts')
+              .select('id, name, telegram_onboard_token')
+              .eq('telegram_onboard_token', onboardToken)
+              .eq('user_contact_id', userDetails.id)
+              .maybeSingle()
+
+            if (onboardError) {
+              console.warn('Error looking up onboard contact:', onboardError.message)
+            } else if (onboardContact) {
+              console.log(`Found contact for onboarding: ${onboardContact.name}`)
+              
+              // Update the contact with telegram_id and clear the onboard token
+              const { error: updateError } = await supabase
+                .from('contacts')
+                .update({
+                  telegram_id: telegramUserId,
+                  telegram_onboard_token: null, // Clear the token
+                  updated_at: new Date().toISOString()
+                })
+                .eq('id', onboardContact.id)
+
+              if (updateError) {
+                console.warn('Error updating contact with telegram_id:', updateError.message)
+              } else {
+                contactId = onboardContact.id
+                isOnboardingMessage = true
+                console.log(`Successfully onboarded contact ${onboardContact.name} with telegram_id ${telegramUserId}`)
+              }
+            } else {
+              console.warn(`No contact found for onboard token: ${onboardToken}`)
+            }
+          } catch (err) {
+            console.warn('Error processing onboard token:', err)
+          }
+        }
+
+        if (telegramUserId && !isOnboardingMessage) {
           // Look up contact by telegram_id
           const { data: contactData, error: contactError } = await supabase
             .from('contacts')
@@ -180,6 +225,28 @@ export async function POST(request: Request) {
       try {
         // Send message to Python Executive Assistant server for processing
         let response = `Hello! I'm ${userDetails?.name || "your executive"}'s assistant. How may I help you?`
+        
+        // Special welcome message for newly onboarded contacts
+        if (isOnboardingMessage && contactId) {
+          const { data: contactData } = await supabase
+            .from('contacts')
+            .select('name')
+            .eq('id', contactId)
+            .maybeSingle()
+          
+          const contactName = contactData?.name || 'there'
+          response = `Hello ${contactName}! 👋
+
+Welcome! I'm ${userDetails?.name}'s executive assistant. I'm here to help you coordinate meetings and scheduling with ${userDetails?.name}.
+
+Here's what I can help you with:
+• Schedule meetings with ${userDetails?.name}
+• Check ${userDetails?.name}'s availability 
+• Coordinate meeting details and invitations
+• Answer questions about ${userDetails?.name}'s schedule
+
+How can I assist you today?`
+        }
         
         if (contactId && messageText && userDetails && userId) {
           try {

@@ -42,8 +42,8 @@ class Config:
     LLM_MODEL = os.getenv("LLM_MODEL", "gpt-3.5-turbo")
     LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.7"))
     
-    # Frontend URL
-    FRONTEND_URL = os.getenv("FRONTEND_URL", "https://athena-v3-rwuk.onrender.com")
+    # Environment-aware frontend URL configuration
+    FRONTEND_URL = os.getenv("FRONTEND_URL", "https://athena-v3-rwuk.onrender.com" if IS_PRODUCTION else "http://localhost:3000")
     
     @classmethod
     def validate(cls):

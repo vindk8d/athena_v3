@@ -1047,7 +1047,7 @@ async def create_event_tool(title: str, time_reference: str, duration_minutes: i
             if location:
                 result += f"Location: {location}\n"
             if event.get('html_link'):
-                result += f"Calendar link: {event['html_link']}\n"
+                result += f"📅 View/Edit Event: {event['html_link']}\n"
             
             return result
             
@@ -1147,6 +1147,8 @@ def get_events_tool(start_datetime: str, end_datetime: str) -> str:
                     result += f"  Location: {event['location']}\n"
                 if event['attendees']:
                     result += f"  Attendees: {', '.join(event['attendees'])}\n"
+                if event.get('html_link'):
+                    result += f"  📅 View/Edit Event: {event['html_link']}\n"
                 result += "\n"
             
             return result

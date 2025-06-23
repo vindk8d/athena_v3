@@ -3,7 +3,8 @@ import { TelegramService } from '../lib/telegram'
 async function setupWebhook() {
   try {
     const botToken = process.env.TELEGRAM_BOT_TOKEN
-    const webhookUrl = process.env.TELEGRAM_WEBHOOK_URL || 'https://athena-v3-rwuk.onrender.com/api/telegram/webhook'
+    // Environment-aware webhook URL configuration
+    const webhookUrl = process.env.TELEGRAM_WEBHOOK_URL || (process.env.NODE_ENV === 'production' ? 'https://athena-v3-rwuk.onrender.com/api/telegram/webhook' : 'http://localhost:3000/api/telegram/webhook')
 
     console.log('Setup environment:', {
       hasToken: !!botToken,

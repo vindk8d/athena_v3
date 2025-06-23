@@ -83,8 +83,9 @@ export async function GET(request: Request) {
         console.error('Error processing OAuth tokens:', tokenError)
       }
       
-      // Use the production frontend URL for consistent redirection
-      const redirectUrl = new URL('/', 'https://athena-v3-rwuk.onrender.com')
+      // Environment-aware redirect URL configuration
+      const baseUrl = process.env.FRONTEND_URL || (process.env.NODE_ENV === 'production' ? 'https://athena-v3-rwuk.onrender.com' : 'http://localhost:3000')
+      const redirectUrl = new URL('/', baseUrl)
       return NextResponse.redirect(redirectUrl)
     }
   }

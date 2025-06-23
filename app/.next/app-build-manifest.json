@@ -1,25 +1,56 @@
 {
   "pages": {
-    "/layout": [
-      "static/chunks/webpack.js",
-      "static/chunks/main-app.js",
-      "static/css/app/layout.css",
-      "static/chunks/app/layout.js"
-    ],
-    "/page": [
-      "static/chunks/webpack.js",
-      "static/chunks/main-app.js",
-      "static/chunks/app/page.js"
-    ],
-    "/auth/signin/page": [
-      "static/chunks/webpack.js",
-      "static/chunks/main-app.js",
-      "static/chunks/app/auth/signin/page.js"
+    "/_not-found/page": [
+      "static/chunks/webpack-b34f1aa858dcd8b7.js",
+      "static/chunks/4bd1b696-52a6696c08e3276c.js",
+      "static/chunks/684-a1cdaead6b6f6f08.js",
+      "static/chunks/main-app-fdf6d701a2326b23.js",
+      "static/chunks/app/_not-found/page-5bfe245ad955586d.js"
     ],
     "/auth/callback/route": [
-      "static/chunks/webpack.js",
-      "static/chunks/main-app.js",
-      "static/chunks/app/auth/callback/route.js"
+      "static/chunks/webpack-b34f1aa858dcd8b7.js",
+      "static/chunks/4bd1b696-52a6696c08e3276c.js",
+      "static/chunks/684-a1cdaead6b6f6f08.js",
+      "static/chunks/main-app-fdf6d701a2326b23.js",
+      "static/chunks/app/auth/callback/route-4763b4b8979b1d6c.js"
+    ],
+    "/layout": [
+      "static/chunks/webpack-b34f1aa858dcd8b7.js",
+      "static/chunks/4bd1b696-52a6696c08e3276c.js",
+      "static/chunks/684-a1cdaead6b6f6f08.js",
+      "static/chunks/main-app-fdf6d701a2326b23.js",
+      "static/css/f1e29337f62f383d.css",
+      "static/chunks/app/layout-3286e5b5015ea31b.js"
+    ],
+    "/api/telegram/status/route": [
+      "static/chunks/webpack-b34f1aa858dcd8b7.js",
+      "static/chunks/4bd1b696-52a6696c08e3276c.js",
+      "static/chunks/684-a1cdaead6b6f6f08.js",
+      "static/chunks/main-app-fdf6d701a2326b23.js",
+      "static/chunks/app/api/telegram/status/route-e0d03132e9e1d63d.js"
+    ],
+    "/api/telegram/webhook/route": [
+      "static/chunks/webpack-b34f1aa858dcd8b7.js",
+      "static/chunks/4bd1b696-52a6696c08e3276c.js",
+      "static/chunks/684-a1cdaead6b6f6f08.js",
+      "static/chunks/main-app-fdf6d701a2326b23.js",
+      "static/chunks/app/api/telegram/webhook/route-382aca828ea71df4.js"
+    ],
+    "/auth/signin/page": [
+      "static/chunks/webpack-b34f1aa858dcd8b7.js",
+      "static/chunks/4bd1b696-52a6696c08e3276c.js",
+      "static/chunks/684-a1cdaead6b6f6f08.js",
+      "static/chunks/main-app-fdf6d701a2326b23.js",
+      "static/chunks/877-29250349f52ddf96.js",
+      "static/chunks/app/auth/signin/page-1bbc3783e4f82760.js"
+    ],
+    "/page": [
+      "static/chunks/webpack-b34f1aa858dcd8b7.js",
+      "static/chunks/4bd1b696-52a6696c08e3276c.js",
+      "static/chunks/684-a1cdaead6b6f6f08.js",
+      "static/chunks/main-app-fdf6d701a2326b23.js",
+      "static/chunks/877-29250349f52ddf96.js",
+      "static/chunks/app/page-3d63923b663e9a36.js"
     ]
   }
 }

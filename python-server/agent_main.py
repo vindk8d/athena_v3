@@ -264,19 +264,42 @@ def get_supabase_client():
     logger.debug(f"Creating Supabase client with URL: {supabase_url[:50]}...")
     return create_client(supabase_url, supabase_key)
 
+def get_user_calendar_query_base(user_id: str, supabase_client):
+    """Get base query for user calendars with to_include_in_check filter applied."""
+    return supabase_client.table('calendar_list').select('*').eq('user_id', user_id).eq('calendar_type', 'google').eq('to_include_in_check', True)
+
 def get_included_calendars(user_id: str) -> List[str]:
-    """Get list of calendar IDs that should be included in availability checks."""
+    """Get list of calendar IDs that should be included in availability checks, ordered by write access."""
     try:
         supabase = get_supabase_client()
         if not supabase:
             logger.error("Could not initialize Supabase client")
             return []
         
-        response = supabase.table('calendar_list').select('calendar_id').eq('user_id', user_id).eq('calendar_type', 'google').eq('to_include_in_check', True).execute()
+        # Get calendars with write access priority: primary first, then owner/writer, then others
+        response = supabase.table('calendar_list').select('calendar_id, access_role, is_primary').eq('user_id', user_id).eq('calendar_type', 'google').eq('to_include_in_check', True).execute()
         
         if response.data:
-            calendar_ids = [item['calendar_id'] for item in response.data]
-            logger.info(f"Found {len(calendar_ids)} included calendars for user {user_id}")
+            # Separate calendars by access level
+            primary_calendars = []
+            writable_calendars = []
+            readonly_calendars = []
+            
+            for item in response.data:
+                calendar_id = item['calendar_id']
+                access_role = item.get('access_role', 'reader')
+                is_primary = item.get('is_primary', False)
+                
+                if is_primary:
+                    primary_calendars.append(calendar_id)
+                elif access_role in ['owner', 'writer']:
+                    writable_calendars.append(calendar_id)
+                else:
+                    readonly_calendars.append(calendar_id)
+            
+            # Return in priority order: primary first, then writable, then readonly
+            calendar_ids = primary_calendars + writable_calendars + readonly_calendars
+            logger.info(f"Found {len(calendar_ids)} included calendars for user {user_id} (primary: {len(primary_calendars)}, writable: {len(writable_calendars)}, readonly: {len(readonly_calendars)})")
             return calendar_ids
         else:
             logger.warning(f"No included calendars found for user {user_id}")
@@ -309,7 +332,8 @@ def get_calendar_timezone(user_id: str, calendar_id: str) -> str:
         if not supabase:
             logger.error("Could not initialize Supabase client")
             return "UTC"
-        response = supabase.table('calendar_list').select('timezone').eq('user_id', user_id).eq('calendar_id', calendar_id).execute()
+        # Only get timezone for calendars that are included in checks
+        response = supabase.table('calendar_list').select('timezone').eq('user_id', user_id).eq('calendar_id', calendar_id).eq('to_include_in_check', True).execute()
         if response.data and response.data[0].get('timezone'):
             return response.data[0]['timezone']
         return "UTC"
@@ -707,10 +731,43 @@ async def create_event_tool(title: str, time_reference: str, duration_minutes: i
             
             service = get_calendar_service()
             
-            event = service.create_event(
-                primary_calendar, title, description, start_datetime, 
-                end_datetime, calendar_timezone, attendee_emails or [], location
-            )
+            try:
+                event = service.create_event(
+                    primary_calendar, title, description, start_datetime, 
+                    end_datetime, calendar_timezone, attendee_emails or [], location
+                )
+            except Exception as create_error:
+                # If event creation fails on the primary calendar, try the next writable calendar
+                error_msg = str(create_error)
+                if "requiredAccessLevel" in error_msg or "403" in error_msg:
+                    logger.warning(f"Cannot create event on calendar {primary_calendar}: {error_msg}")
+                    
+                    # Get supabase client for checking calendar access
+                    supabase = get_supabase_client()
+                    
+                    # Try to find another writable calendar
+                    for fallback_calendar in calendar_ids[1:]:
+                        try:
+                            # Check if this calendar has write access
+                            calendar_info = supabase.table('calendar_list').select('access_role').eq('user_id', user_id).eq('calendar_id', fallback_calendar).eq('to_include_in_check', True).execute()
+                            if calendar_info.data and calendar_info.data[0].get('access_role') in ['owner', 'writer']:
+                                logger.info(f"Trying fallback calendar: {fallback_calendar}")
+                                fallback_timezone = get_calendar_timezone(user_id, fallback_calendar)
+                                event = service.create_event(
+                                    fallback_calendar, title, description, start_datetime, 
+                                    end_datetime, fallback_timezone, attendee_emails or [], location
+                                )
+                                logger.info(f"Successfully created event on fallback calendar: {fallback_calendar}")
+                                break
+                        except Exception as fallback_error:
+                            logger.warning(f"Fallback calendar {fallback_calendar} also failed: {fallback_error}")
+                            continue
+                    else:
+                        # No writable calendar found
+                        return f"❌ Unable to create event: No writable calendars available. Please check your calendar permissions in the web interface."
+                else:
+                    # Re-raise other types of errors
+                    raise create_error
             
             result = f"✅ Meeting scheduled successfully on your calendar!\n"
             result += f"Title: {event['summary']}\n"

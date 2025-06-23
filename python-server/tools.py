@@ -42,18 +42,37 @@ def get_supabase_client():
     return create_client(supabase_url, supabase_key)
 
 def get_included_calendars(user_id: str) -> List[str]:
-    """Get list of calendar IDs that should be included in availability checks."""
+    """Get list of calendar IDs that should be included in availability checks, ordered by write access."""
     try:
         supabase = get_supabase_client()
         if not supabase:
             logger.error("Could not initialize Supabase client")
             return []
         
-        response = supabase.table('calendar_list').select('calendar_id').eq('user_id', user_id).eq('calendar_type', 'google').eq('to_include_in_check', True).execute()
+        # Get calendars with write access priority: primary first, then owner/writer, then others
+        response = supabase.table('calendar_list').select('calendar_id, access_role, is_primary').eq('user_id', user_id).eq('calendar_type', 'google').eq('to_include_in_check', True).execute()
         
         if response.data:
-            calendar_ids = [item['calendar_id'] for item in response.data]
-            logger.info(f"Found {len(calendar_ids)} included calendars for user {user_id}")
+            # Separate calendars by access level
+            primary_calendars = []
+            writable_calendars = []
+            readonly_calendars = []
+            
+            for item in response.data:
+                calendar_id = item['calendar_id']
+                access_role = item.get('access_role', 'reader')
+                is_primary = item.get('is_primary', False)
+                
+                if is_primary:
+                    primary_calendars.append(calendar_id)
+                elif access_role in ['owner', 'writer']:
+                    writable_calendars.append(calendar_id)
+                else:
+                    readonly_calendars.append(calendar_id)
+            
+            # Return in priority order: primary first, then writable, then readonly
+            calendar_ids = primary_calendars + writable_calendars + readonly_calendars
+            logger.info(f"Found {len(calendar_ids)} included calendars for user {user_id} (primary: {len(primary_calendars)}, writable: {len(writable_calendars)}, readonly: {len(readonly_calendars)})")
             return calendar_ids
         else:
             logger.warning(f"No included calendars found for user {user_id}")
@@ -849,7 +868,8 @@ def get_calendar_timezone(user_id: str, calendar_id: str) -> str:
         if not supabase:
             logger.error("Could not initialize Supabase client")
             return "UTC"
-        response = supabase.table('calendar_list').select('timezone').eq('user_id', user_id).eq('calendar_id', calendar_id).execute()
+        # Only get timezone for calendars that are included in checks
+        response = supabase.table('calendar_list').select('timezone').eq('user_id', user_id).eq('calendar_id', calendar_id).eq('to_include_in_check', True).execute()
         if response.data and response.data[0].get('timezone'):
             return response.data[0]['timezone']
         return "UTC"

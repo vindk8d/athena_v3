@@ -442,10 +442,12 @@ async def sync_calendars(request: Request):
 async def get_calendars(user_id: str):
     """
     Get user's calendar list from calendar_list table.
+    Only returns calendars that are configured for inclusion in calendar operations.
     """
     try:
         supabase = get_supabase_client()
-        response = supabase.table('calendar_list').select('*').eq('user_id', user_id).eq('calendar_type', 'google').execute()
+        # Only return calendars that are included in checks
+        response = supabase.table('calendar_list').select('*').eq('user_id', user_id).eq('calendar_type', 'google').eq('to_include_in_check', True).execute()
         return {"success": True, "calendars": response.data or []}
     except Exception as e:
         return {"success": False, "error": str(e)}

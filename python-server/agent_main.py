@@ -141,13 +141,8 @@ async def parse_time_reference_tool(time_reference: str, duration_minutes: int =
         Formatted string with start and end times, or error message
     """
     try:
-        # Get user context for timezone
-        try:
-            user_id = get_current_user_id()
-            user_timezone = get_user_timezone(user_id)
-        except ValueError:
-            # Demo mode fallback
-            user_timezone = "UTC"
+        # Get user timezone from cache (much more efficient)
+        user_timezone = get_timezone_from_cache()
         
         # Get LLM instance
         llm = get_llm_instance()
@@ -537,6 +532,169 @@ class CalendarService:
 _calendar_service: Optional[CalendarService] = None
 _current_user_id: Optional[str] = None
 
+# Thread-aware global cache for user context (much simpler than state schema)
+_user_context_cache: Dict[str, Dict[str, Any]] = {}
+# Global current thread context for easy access
+_current_thread_id: Optional[str] = None
+
+def set_current_thread_context(user_id: str, contact_id: str) -> str:
+    """Set the current thread context and return thread_id."""
+    global _current_thread_id
+    _current_thread_id = f"thread_{user_id}_{contact_id}"
+    
+    # Initialize cache if needed
+    initialize_user_context_cache(user_id, contact_id)
+    
+    return _current_thread_id
+
+def get_current_thread_id() -> str:
+    """Get current thread ID."""
+    return _current_thread_id or "default_thread"
+
+def initialize_user_context_cache(user_id: str, contact_id: str) -> None:
+    """Initialize user context cache for the current thread."""
+    thread_id = f"thread_{user_id}_{contact_id}"
+    
+    # Check if already cached for this thread
+    if thread_id in _user_context_cache:
+        logger.info(f"Context already cached for thread {thread_id}")
+        return
+    
+    try:
+        # Fetch all context data once
+        user_details = get_user_details(user_id)
+        user_timezone = user_details.get('default_timezone', 'UTC')
+        colleague_info = get_colleague_info(user_id, contact_id)
+        calendar_ids = get_included_calendars(user_id)
+        
+        # Cache everything for this thread
+        _user_context_cache[thread_id] = {
+            'user_timezone': user_timezone,
+            'user_details': user_details,
+            'colleague_info': colleague_info,
+            'calendar_ids': calendar_ids,
+            'user_id': user_id,
+            'contact_id': contact_id,
+            'thread_id': thread_id
+        }
+        
+        logger.info(f"Context cached for thread {thread_id}: timezone={user_timezone}, calendars={len(calendar_ids)}")
+        
+    except Exception as e:
+        logger.error(f"Error initializing context cache: {e}")
+        # Set fallback values
+        _user_context_cache[thread_id] = {
+            'user_timezone': 'UTC',
+            'user_details': {},
+            'colleague_info': {},
+            'calendar_ids': [],
+            'user_id': user_id,
+            'contact_id': contact_id,
+            'thread_id': thread_id
+        }
+
+def get_cached_context(thread_id: str = None) -> Dict[str, Any]:
+    """Get cached context for the specified or current thread."""
+    if not thread_id:
+        thread_id = get_current_thread_id()
+    
+    return _user_context_cache.get(thread_id, {})
+
+def get_user_id_from_cache() -> str:
+    """Get user_id from cache."""
+    context = get_cached_context()
+    user_id = context.get('user_id')
+    if user_id:
+        return user_id
+    
+    # Fallback to global user_id if available
+    try:
+        return get_current_user_id()
+    except ValueError:
+        return ""
+
+def get_contact_id_from_cache() -> str:
+    """Get contact_id from cache."""
+    context = get_cached_context()
+    return context.get('contact_id', "")
+
+def get_timezone_from_cache() -> str:
+    """Get user timezone from cache, fallback to database if needed."""
+    context = get_cached_context()
+    user_timezone = context.get('user_timezone')
+    if user_timezone:
+        return user_timezone
+    
+    # Fallback to direct DB call
+    try:
+        user_id = get_user_id_from_cache()
+        if user_id:
+            return get_user_timezone(user_id)
+    except Exception:
+        pass
+    return "UTC"
+
+def get_calendar_ids_from_cache() -> List[str]:
+    """Get calendar IDs from cache, fallback to database if needed."""
+    context = get_cached_context()
+    calendar_ids = context.get('calendar_ids')
+    if calendar_ids is not None:
+        return calendar_ids
+    
+    # Fallback to direct DB call
+    try:
+        user_id = get_user_id_from_cache()
+        if user_id:
+            return get_included_calendars(user_id)
+    except Exception:
+        pass
+    return []
+
+def get_user_details_from_cache() -> Dict[str, Any]:
+    """Get user details from cache, fallback to database if needed."""
+    context = get_cached_context()
+    user_details = context.get('user_details')
+    if user_details:
+        return user_details
+    
+    # Fallback to direct DB call
+    try:
+        user_id = get_user_id_from_cache()
+        if user_id:
+            return get_user_details(user_id)
+    except Exception:
+        pass
+    return {}
+
+def get_colleague_info_from_cache() -> Dict[str, Any]:
+    """Get colleague info from cache, fallback to database if needed."""
+    context = get_cached_context()
+    colleague_info = context.get('colleague_info')
+    if colleague_info:
+        return colleague_info
+    
+    # Fallback to direct DB call
+    try:
+        user_id = get_user_id_from_cache()
+        contact_id = get_contact_id_from_cache()
+        if user_id and contact_id:
+            return get_colleague_info(user_id, contact_id)
+    except Exception:
+        pass
+    return {}
+
+def clear_context_cache(user_id: str = None, contact_id: str = None):
+    """Clear context cache for specific thread or all threads."""
+    global _user_context_cache
+    
+    if user_id and contact_id:
+        thread_id = f"thread_{user_id}_{contact_id}"
+        _user_context_cache.pop(thread_id, None)
+        logger.info(f"Cleared context cache for thread {thread_id}")
+    else:
+        _user_context_cache.clear()
+        logger.info("Cleared all context cache")
+
 def set_calendar_service(access_token: str, refresh_token: str = None, user_id: str = None, llm_instance=None):
     """Set up the calendar service with the provided credentials."""
     try:
@@ -597,7 +755,7 @@ def get_colleague_info(user_id: str, contact_id: str) -> Dict[str, Any]:
             logger.error("Could not initialize Supabase client")
             return {}
         
-        response = supabase.table('contacts').select('name, nickname, email').eq('user_id', user_id).eq('id', contact_id).execute()
+        response = supabase.table('contacts').select('name, nickname, email').eq('id', contact_id).execute()
         
         if response.data and response.data[0]:
             colleague_data = response.data[0]
@@ -611,13 +769,34 @@ def get_colleague_info(user_id: str, contact_id: str) -> Dict[str, Any]:
         logger.error(f"Error fetching colleague info: {e}")
         return {}
 
+def get_user_details(user_id: str) -> Dict[str, Any]:
+    """Get complete user details from user_details table."""
+    try:
+        supabase = get_supabase_client()
+        if not supabase:
+            logger.error("Could not initialize Supabase client")
+            return {}
+        
+        response = supabase.table('user_details').select('*').eq('user_id', user_id).execute()
+        
+        if response.data and response.data[0]:
+            return response.data[0]
+        return {}
+    except Exception as e:
+        logger.error(f"Error fetching user details: {e}")
+        return {}
+
+
+
 # State Schema
 class SimpleState(TypedDict):
-    """Enhanced state schema for Athena agent with checkpointing and summarization."""
+    """Simplified state schema for Athena agent with checkpointing and summarization.
+    
+    Note: user_id and contact_id are now managed via the global thread-aware cache
+    for better performance and consistency.
+    """
     messages: Annotated[List[BaseMessage], add_messages]
     conversation_summary: Optional[str]  # For conversation summarization
-    user_id: str
-    contact_id: str
     message_intent: Optional[str]
     metadata: Optional[Dict[str, Any]]
 
@@ -635,11 +814,13 @@ async def check_availability_tool(query: str, duration_minutes: int = 30) -> str
         duration_minutes: Expected meeting duration in minutes (default 30)
     """
     try:
+        # Get user context from state (much more efficient than DB calls)
+        user_timezone = get_timezone_from_cache()
+        calendar_ids = get_calendar_ids_from_cache()
+        
         # Check if we have user context (for production) or if we're in demo mode (LangGraph Studio)
         try:
             user_id = get_current_user_id()
-            user_timezone = get_user_timezone(user_id)
-            calendar_ids = get_included_calendars(user_id)
             
             if not calendar_ids:
                 return "No calendars configured for availability checking. Please configure calendars in the web interface."
@@ -728,8 +909,8 @@ async def create_event_tool(title: str, time_reference: str, duration_minutes: i
         
         try:
             user_id = get_current_user_id()
-            user_timezone = get_user_timezone(user_id)
-            calendar_ids = get_included_calendars(user_id)
+            user_timezone = get_timezone_from_cache()
+            calendar_ids = get_calendar_ids_from_cache()
             
             if not calendar_ids:
                 return "No calendars configured for creating events. Please configure calendars in the web interface."
@@ -877,7 +1058,7 @@ def get_events_tool(start_datetime: str, end_datetime: str) -> str:
         
         try:
             user_id = get_current_user_id()
-            calendar_ids = get_included_calendars(user_id)
+            calendar_ids = get_calendar_ids_from_cache()
             
             if not calendar_ids:
                 return "No calendars configured for checking events. Please configure calendars in the web interface."
@@ -957,18 +1138,8 @@ async def get_current_time_tool(timezone: str = None) -> str:
     try:
         # Try to get user's timezone if not specified
         if timezone is None:
-            try:
-                user_id = get_current_user_id()
-                timezone = get_user_timezone(user_id)
-                logger.info(f"Using user's default timezone: {timezone}")
-            except ValueError as e:
-                if "User ID not set" in str(e) or "Calendar service not initialized" in str(e):
-                    # Demo mode for LangGraph Studio
-                    logger.info("Running in demo mode - using UTC as default timezone")
-                    timezone = "UTC"
-                else:
-                    logger.error(f"Error getting user timezone: {e}")
-                    timezone = "UTC"
+            timezone = get_timezone_from_cache()
+            logger.info(f"Using user's default timezone from state: {timezone}")
         
         tz = pytz.timezone(timezone)
         current_time = datetime.now(tz)
@@ -1042,7 +1213,7 @@ def modify_event_tool(event_id: str, calendar_id: str = None, title: str = None,
         
         try:
             user_id = get_current_user_id()
-            calendar_ids = get_included_calendars(user_id)
+            calendar_ids = get_calendar_ids_from_cache()
             if not calendar_ids:
                 return "No calendars configured. Please configure calendars in the web interface."
             
@@ -1170,7 +1341,7 @@ def delete_event_tool(event_id: str, calendar_id: str = None) -> str:
         
         try:
             user_id = get_current_user_id()
-            calendar_ids = get_included_calendars(user_id)
+            calendar_ids = get_calendar_ids_from_cache()
             if not calendar_ids:
                 return "No calendars configured. Please configure calendars in the web interface."
             
@@ -1318,11 +1489,12 @@ async def get_available_slots_for_period_tool(time_period: str, duration_minutes
         duration_minutes: Duration of each slot in minutes (default: 30)
     """
     try:
-        # Get user context
+        # Get user context from state (much more efficient than DB calls)
+        user_timezone = get_timezone_from_cache()
+        calendar_ids = get_calendar_ids_from_cache()
+        
         try:
             user_id = get_current_user_id()
-            user_timezone = get_user_timezone(user_id)
-            calendar_ids = get_included_calendars(user_id)
             
             if not calendar_ids:
                 return "No calendars configured for availability checking. Please configure calendars in the web interface."
@@ -1415,7 +1587,7 @@ def find_event_tool(search_criteria: str, start_datetime: str = None, end_dateti
         
         try:
             user_id = get_current_user_id()
-            calendar_ids = get_included_calendars(user_id)
+            calendar_ids = get_calendar_ids_from_cache()
             
             if not calendar_ids:
                 return "No calendars configured for searching events. Please configure calendars in the web interface."
@@ -2491,6 +2663,8 @@ Always double-check that dates and times make sense before proceeding.
         """Trims and summarizes the conversation history for cost efficiency."""
         logger.info("📝 Summarizer Node")
         
+        # Context is already initialized in process_message before graph execution
+        
         messages = state.get("messages", [])
         
         if len(messages) > SUMMARY_THRESHOLD:
@@ -2558,8 +2732,8 @@ New consolidated summary:"""
         
         try:
             messages = state.get("messages", [])
-            contact_id = state.get("contact_id")
-            user_id = state.get("user_id")
+            contact_id = get_contact_id_from_cache()
+            user_id = get_user_id_from_cache()
             
             if messages and contact_id and user_id:
                 await archive_conversation_to_messages_table(contact_id, user_id, messages)
@@ -2818,8 +2992,8 @@ COLLEAGUE INTERACTION:
                 except Exception as e:
                     logger.error(f"Error setting up calendar service: {str(e)}")
             
-            # Create thread ID for checkpointing (unique per contact)
-            thread_id = f"athena_{user_id}_{contact_id}"
+            # Initialize thread context and cache early (before graph execution)
+            thread_id = set_current_thread_context(user_id, contact_id)
             
             # Get the compiled graph (with or without custom checkpointer based on environment)
             graph = await self._create_graph()
@@ -2838,15 +3012,12 @@ COLLEAGUE INTERACTION:
                 logger.warning(f"Could not retrieve existing state: {e}")
                 is_continuing_conversation = False
             
-            # Prepare the input state
+            # Prepare the simplified input state (user_id and contact_id now in cache)
             # For continuing conversations, LangGraph will automatically merge with existing state
             input_state = {
                 "messages": [HumanMessage(content=message)],  # Only the new message
-                "user_id": user_id,
-                "contact_id": contact_id,
                 "message_intent": None,  # Will be determined by intent classifier
                 "metadata": {
-                    "user_details": user_details,
                     "access_token": access_token is not None,
                     "refresh_token": refresh_token is not None,
                     "timestamp": datetime.now().isoformat(),
@@ -2876,8 +3047,8 @@ COLLEAGUE INTERACTION:
                 "response": response,
                 "tools_used": [],  # Could be enhanced to track tool usage
                 "intent": final_state.get("message_intent", "unknown"),
-                "user_id": user_id,
-                "contact_id": contact_id,
+                "user_id": get_user_id_from_cache(),
+                "contact_id": get_contact_id_from_cache(),
                 "thread_id": thread_id,
                 "extracted_info": {
                     "enhanced_agent": True,
@@ -2895,8 +3066,8 @@ COLLEAGUE INTERACTION:
                 "response": "I apologize, but I encountered an error processing your request.",
                 "tools_used": [],
                 "intent": "error",
-                "user_id": user_id,
-                "contact_id": contact_id,
+                "user_id": get_user_id_from_cache(),
+                "contact_id": get_contact_id_from_cache(),
                 "extracted_info": None
             }
     

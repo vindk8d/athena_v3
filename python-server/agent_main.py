@@ -1705,16 +1705,16 @@ async def get_available_slots_for_period_tool(time_period: str, duration_minutes
         return f"I had trouble finding available slots for {time_period}. Please try again or provide a more specific time period."
 
 @tool
-def find_event_tool(search_criteria: str, start_datetime: str = None, end_datetime: str = None) -> str:
-    """Find calendar events by title, description, or other criteria.
+async def find_event_tool(search_criteria: str, time_reference: str = None) -> str:
+    """Find calendar events by title, description, attendees, or other criteria.
     
-    This tool helps identify events when you don't have the exact event ID.
-    It searches through event titles, descriptions, and other fields.
+    This enhanced tool searches through calendar events and returns structured data
+    that can be used with modify_event_tool or delete_event_tool.
     
     Args:
-        search_criteria: Text to search for in event titles, descriptions, etc.
-        start_datetime: Optional start of date range to search within (ISO format with timezone)
-        end_datetime: Optional end of date range to search within (ISO format with timezone)
+        search_criteria: What to search for (meeting title, attendee name, location, description, etc.)
+        time_reference: Optional time context to narrow search (e.g., "tomorrow", "next week", "today")
+                       If not provided, searches from past 7 days to next 30 days
     """
     try:
         if not search_criteria or not search_criteria.strip():
@@ -1723,33 +1723,48 @@ def find_event_tool(search_criteria: str, start_datetime: str = None, end_dateti
         try:
             user_id = get_current_user_id()
             calendar_ids = get_calendar_ids_from_cache()
-            user_timezone = get_timezone_from_cache()  # Get user's timezone from cache
+            user_timezone = get_timezone_from_cache()
             
             if not calendar_ids:
                 return "No calendars configured for searching events. Please configure calendars in the web interface."
             
             service = get_calendar_service()
-            all_events = []
             
-            # If no date range provided, search in a reasonable range (last 30 days to next 90 days)
-            if not start_datetime or not end_datetime:
+            # Determine search time range
+            if time_reference:
+                # Parse time reference to get search range
+                llm = get_llm_instance()
+                if llm:
+                    start_datetime_str, end_datetime_str = await parse_time_with_llm(time_reference, user_timezone, llm)
+                    if start_datetime_str and end_datetime_str:
+                        start_datetime = start_datetime_str
+                        end_datetime = end_datetime_str
+                    else:
+                        # Fallback to default range
+                        from datetime import timedelta
+                        current_time = datetime.now(pytz.timezone(user_timezone))
+                        start_datetime = (current_time - timedelta(days=7)).isoformat()
+                        end_datetime = (current_time + timedelta(days=30)).isoformat()
+                else:
+                    # Fallback to default range
+                    from datetime import timedelta
+                    current_time = datetime.now(pytz.timezone(user_timezone))
+                    start_datetime = (current_time - timedelta(days=7)).isoformat()
+                    end_datetime = (current_time + timedelta(days=30)).isoformat()
+            else:
+                # Default search range (past 7 days to next 30 days)
                 from datetime import timedelta
-                # Use user's timezone instead of UTC
                 current_time = datetime.now(pytz.timezone(user_timezone))
-                default_start = (current_time - timedelta(days=30)).isoformat()
-                default_end = (current_time + timedelta(days=90)).isoformat()
-                start_datetime = start_datetime or default_start
-                end_datetime = end_datetime or default_end
+                start_datetime = (current_time - timedelta(days=7)).isoformat()
+                end_datetime = (current_time + timedelta(days=30)).isoformat()
             
             # Get events from all included calendars
+            all_events = []
             for calendar_id in calendar_ids:
                 try:
-                    # Convert datetime to date for the API call
                     start_date = start_datetime.split('T')[0]
                     end_date = end_datetime.split('T')[0]
-                    # Pass user timezone to get_events for proper timezone handling
                     events = service.get_events(calendar_id, start_date, end_date, user_timezone)
-                    # Add calendar_id to each event for tracking
                     for event in events:
                         event['calendar_id'] = calendar_id
                     all_events.extend(events)
@@ -1757,54 +1772,75 @@ def find_event_tool(search_criteria: str, start_datetime: str = None, end_dateti
                     logger.warning(f"Error getting events from calendar {calendar_id}: {e}")
             
             if not all_events:
-                return f"No events found in the search date range"
+                time_desc = f" for time period '{time_reference}'" if time_reference else ""
+                return f"No events found matching '{search_criteria}'{time_desc}"
             
-            # Filter events based on search criteria
-            search_lower = search_criteria.lower()
+            # Enhanced search across multiple fields with partial matching
+            search_terms = search_criteria.lower().split()
             matching_events = []
             
             for event in all_events:
-                # Search in title/summary
-                if search_lower in event.get('summary', '').lower():
-                    matching_events.append(event)
-                    continue
+                match_score = 0
                 
-                # Search in description
-                if search_lower in event.get('description', '').lower():
-                    matching_events.append(event)
-                    continue
+                # Check if ANY search term matches ANY field
+                for term in search_terms:
+                    # Search in title/summary (highest priority)
+                    if term in event.get('summary', '').lower():
+                        match_score += 3
+                    
+                    # Search in description
+                    if term in event.get('description', '').lower():
+                        match_score += 2
+                    
+                    # Search in location
+                    if term in event.get('location', '').lower():
+                        match_score += 2
+                    
+                    # Search in attendee emails/names
+                    attendee_text = ' '.join(event.get('attendees', [])).lower()
+                    if term in attendee_text:
+                        match_score += 2
                 
-                # Search in location
-                if search_lower in event.get('location', '').lower():
+                # If any terms matched, include the event
+                if match_score > 0:
+                    event['match_score'] = match_score
                     matching_events.append(event)
-                    continue
-                
-                # Search in attendee emails (for meeting organizer names, etc.)
-                attendee_text = ' '.join(event.get('attendees', []))
-                if search_lower in attendee_text.lower():
-                    matching_events.append(event)
-                    continue
             
             if not matching_events:
-                return f"No events found matching '{search_criteria}' in the search date range"
+                time_desc = f" for time period '{time_reference}'" if time_reference else ""
+                return f"No events found matching '{search_criteria}'{time_desc}"
             
-            # Sort events by start time
-            matching_events.sort(key=lambda x: x['start'])
+            # Sort by match score (descending) then by start time
+            matching_events.sort(key=lambda x: (-x['match_score'], x['start']))
             
-            result = f"Found {len(matching_events)} event(s) matching '{search_criteria}':\n\n"
-            for event in matching_events:
-                result += f"- {event['summary']} ({event['start']} - {event['end']})\n"
-                result += f"  Event ID: {event['id']}\n"
-                result += f"  Calendar: {event['calendar_id']}\n"
-                if event['description']:
-                    # Truncate long descriptions
+            # Return structured data that can be used by modify/delete tools
+            result = f"FOUND {len(matching_events)} EVENT(S) MATCHING '{search_criteria}':\n\n"
+            
+            for i, event in enumerate(matching_events, 1):
+                result += f"[{i}] {event['summary']}\n"
+                result += f"    Time: {event['start']} - {event['end']}\n"
+                result += f"    Event ID: {event['id']}\n"
+                result += f"    Calendar ID: {event['calendar_id']}\n"
+                if event.get('description'):
                     desc = event['description'][:100] + "..." if len(event['description']) > 100 else event['description']
-                    result += f"  Description: {desc}\n"
-                if event['location']:
-                    result += f"  Location: {event['location']}\n"
-                if event['attendees']:
-                    result += f"  Attendees: {', '.join(event['attendees'])}\n"
+                    result += f"    Description: {desc}\n"
+                if event.get('location'):
+                    result += f"    Location: {event['location']}\n"
+                if event.get('attendees'):
+                    result += f"    Attendees: {', '.join(event['attendees'])}\n"
                 result += "\n"
+            
+            # Add guidance for next steps
+            if len(matching_events) == 1:
+                event = matching_events[0]
+                result += f"📋 TO MODIFY THIS EVENT:\n"
+                result += f"Use modify_event_tool with event_id='{event['id']}' and calendar_id='{event['calendar_id']}'\n\n"
+                result += f"📋 TO DELETE THIS EVENT:\n"
+                result += f"Use delete_event_tool with event_id='{event['id']}' and calendar_id='{event['calendar_id']}'\n"
+            else:
+                result += f"📋 TO MODIFY/DELETE A SPECIFIC EVENT:\n"
+                result += f"Use the Event ID and Calendar ID from the event you want to change.\n"
+                result += f"For example, for event [1]: modify_event_tool with event_id='{matching_events[0]['id']}' and calendar_id='{matching_events[0]['calendar_id']}'\n"
             
             return result
             
@@ -2651,17 +2687,49 @@ Example time parsing:
 - "in 2 hours" → (current time + 2 hours in ISO format)
 
 Your role is to help users manage their calendar and schedule meetings efficiently. You have access to these calendar tools:
+
+## Core Calendar Tools:
 - parse_time_reference_tool: Parse any natural language time reference (events with duration OR availability periods)
 - check_availability_tool: Check availability for a specific time (provide ISO format)
 - create_event_tool: Create calendar events (requires ISO format times)
 - get_events_tool: Retrieve existing calendar events with their IDs and calendar information
-- find_event_tool: Find events by searching title, description, location, or attendees
 - get_current_time_tool: Get current time and timezone information
 - list_calendars_tool: List all calendars available to the user
-- modify_event_tool: Modify existing calendar events (searches across all calendars automatically)
-- delete_event_tool: Delete calendar events permanently (searches across all calendars automatically)
 - find_available_slots_tool: Find multiple available time slots
 - get_available_slots_for_period_tool: Get available slots by checking calendar
+
+## 🔍 EVENT SEARCH AND MANAGEMENT (Two-Step Process):
+- **find_event_tool**: Enhanced search tool that finds events by title, description, attendees, location, or time references. Returns structured data with Event IDs and Calendar IDs needed for modifications.
+- **modify_event_tool**: Modify existing calendar events (requires event_id and calendar_id from find_event_tool)
+- **delete_event_tool**: Delete calendar events permanently (requires event_id and calendar_id from find_event_tool)
+
+## 🎯 INTELLIGENT EVENT MODIFICATION WORKFLOW:
+When a colleague wants to modify or delete a meeting:
+
+**Step 1: Find the Event**
+Use find_event_tool with:
+- search_criteria: Natural language description ("standup", "client meeting", "meeting with john")
+- time_reference: Optional time context ("tomorrow", "next week", "today")
+
+**Step 2: Take Action**
+Use the Event ID and Calendar ID from the search results with:
+- modify_event_tool: To change title, time, location, attendees, etc.
+- delete_event_tool: To cancel/delete the meeting
+
+## ENHANCED SEARCH CAPABILITIES:
+The find_event_tool can locate events using:
+- **Meeting titles**: "standup", "client meeting", "project review", "one-on-one"
+- **Attendee names**: "john", "sarah", "team meeting"  
+- **Time references**: "tomorrow", "today", "next week", "monday"
+- **Locations**: "conference room", "zoom", "office"
+- **Descriptions**: Any text in the meeting description
+- **Combined searches**: "meeting with john tomorrow", "client call today"
+
+## SMART SEARCH FEATURES:
+- Partial word matching across multiple fields
+- Relevance scoring (title matches rank higher)
+- Time-aware searching with natural language
+- Multiple event handling with clear selection guidance
 
 ## Data Retrieval Tools for Availability:
 - **get_available_slots_for_period_tool**: The most powerful tool for availability checking. It automatically:
@@ -2711,7 +2779,7 @@ When colleagues give confirmations (like "ok go ahead", "yes", "sure"):
 - If you just asked "Shall I create this meeting?" and they confirm, IMMEDIATELY proceed with creating the meeting
 - If you asked for confirmation about any action and they confirm, proceed with that action
 - Don't ask for redundant details if you have sufficient information from conversation history
-- Use natural acknowledgments: "Perfect! Let me get that scheduled for you and [user], [colleague]."
+- Use natural acknowledgments: "Perfect! Let me get that scheduled for you and [user], [colleague_nickname]."
 
 EXAMPLES of natural colleague interaction:
 Colleague: "Can John meet tomorrow at 2 PM?"
@@ -2749,6 +2817,34 @@ Colleague confirms: "11 AM works great!"
 Athena: "Excellent! I'll get that meeting scheduled for [user] and you at 11 AM tomorrow. You'll both receive calendar invites shortly!"
 
 Always double-check that dates and times make sense before proceeding.
+
+## EXAMPLES OF TWO-STEP WORKFLOW:
+
+**Canceling Meetings:**
+Colleague: "Cancel our meeting tomorrow"
+1. find_event_tool(search_criteria="meeting", time_reference="tomorrow")
+2. delete_event_tool(event_id="[from_search]", calendar_id="[from_search]")
+
+Colleague: "Delete the client call"
+1. find_event_tool(search_criteria="client call")
+2. delete_event_tool(event_id="[from_search]", calendar_id="[from_search]")
+
+**Rescheduling Meetings:**
+Colleague: "Move our standup to 3 PM tomorrow"
+1. find_event_tool(search_criteria="standup")
+2. modify_event_tool(event_id="[from_search]", calendar_id="[from_search]", new_time_reference="tomorrow at 3 PM")
+
+**Modifying Meeting Details:**
+Colleague: "Change the title of tomorrow's meeting to 'Budget Review'"
+1. find_event_tool(search_criteria="meeting", time_reference="tomorrow")
+2. modify_event_tool(event_id="[from_search]", calendar_id="[from_search]", title="Budget Review")
+
+**Why This Two-Step Approach Works Better:**
+- Clear separation of concerns (search vs. action)
+- Reusable, modular tools
+- Easier to debug and maintain
+- Agent can confirm the right event before making changes
+- More transparent to users about what's happening
             """),
             MessagesPlaceholder(variable_name="messages"),
             MessagesPlaceholder(variable_name="agent_scratchpad"),

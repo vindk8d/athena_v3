@@ -50,7 +50,7 @@ def get_included_calendars(user_id: str) -> List[str]:
             return []
         
         # Get calendars with write access priority: primary first, then owner/writer, then others
-        response = supabase.table('calendar_list').select('calendar_id, access_role, is_primary').eq('user_id', user_id).eq('calendar_type', 'google').eq('to_include_in_check', True).execute()
+        response = supabase.table('calendar_list').select('calendar_id, access_role, is_primary').eq('user_id', user_id).eq('calendar_type', 'google').eq('to_read_by_agent', True).execute()
         
         if response.data:
             # Separate calendars by access level
@@ -872,8 +872,8 @@ def get_calendar_timezone(user_id: str, calendar_id: str) -> str:
         if not supabase:
             logger.error("Could not initialize Supabase client")
             return "UTC"
-        # Only get timezone for calendars that are included in checks
-        response = supabase.table('calendar_list').select('timezone').eq('user_id', user_id).eq('calendar_id', calendar_id).eq('to_include_in_check', True).execute()
+        # Only get timezone for calendars that are readable by agent
+        response = supabase.table('calendar_list').select('timezone').eq('user_id', user_id).eq('calendar_id', calendar_id).eq('to_read_by_agent', True).execute()
         if response.data and response.data[0].get('timezone'):
             return response.data[0]['timezone']
         return "UTC"

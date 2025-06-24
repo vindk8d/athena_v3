@@ -405,27 +405,38 @@ async def sync_calendars(request: Request):
             
             # Update calendar_list table
             for calendar in calendars:
-                calendar_data = {
-                    'user_id': user_id,
-                    'calendar_id': calendar['id'],
-                    'calendar_name': calendar['summary'],
-                    'calendar_type': 'google',
-                    'is_primary': calendar['primary'],
-                    'access_role': calendar['access_role'],
-                    'timezone': calendar['timezone'],  # Use correct column
-                    'to_include_in_check': True,  # Default to including in availability checks
-                    'updated_at': datetime.utcnow().isoformat()
-                }
-                
                 # Check if calendar already exists
-                existing = supabase.table('calendar_list').select('id').eq('user_id', user_id).eq('calendar_id', calendar['id']).execute()
+                existing = supabase.table('calendar_list').select('id, to_read_by_agent').eq('user_id', user_id).eq('calendar_id', calendar['id']).execute()
                 
                 if existing.data:
-                    # Update existing calendar
+                    # Update existing calendar but preserve to_read_by_agent preference
+                    calendar_data = {
+                        'user_id': user_id,
+                        'calendar_id': calendar['id'],
+                        'calendar_name': calendar['summary'],
+                        'calendar_type': 'google',
+                        'is_primary': calendar['primary'],
+                        'access_role': calendar['access_role'],
+                        'timezone': calendar['timezone'],  # Use correct column
+                        # Preserve existing to_read_by_agent value - do NOT overwrite
+                        'to_read_by_agent': existing.data[0]['to_read_by_agent'],
+                        'updated_at': datetime.utcnow().isoformat()
+                    }
                     supabase.table('calendar_list').update(calendar_data).eq('id', existing.data[0]['id']).execute()
                 else:
-                    # Insert new calendar
-                    calendar_data['created_at'] = datetime.utcnow().isoformat()
+                    # Insert new calendar with default agent access
+                    calendar_data = {
+                        'user_id': user_id,
+                        'calendar_id': calendar['id'],
+                        'calendar_name': calendar['summary'],
+                        'calendar_type': 'google',
+                        'is_primary': calendar['primary'],
+                        'access_role': calendar['access_role'],
+                        'timezone': calendar['timezone'],  # Use correct column
+                        'to_read_by_agent': True,  # Default to allowing agent to read new calendars
+                        'created_at': datetime.utcnow().isoformat(),
+                        'updated_at': datetime.utcnow().isoformat()
+                    }
                     supabase.table('calendar_list').insert(calendar_data).execute()
             
             return {"success": True, "message": f"Successfully synced {len(calendars)} calendars"}
@@ -442,12 +453,12 @@ async def sync_calendars(request: Request):
 async def get_calendars(user_id: str):
     """
     Get user's calendar list from calendar_list table.
-    Only returns calendars that are configured for inclusion in calendar operations.
+    Returns all calendars with their current to_read_by_agent status for calendar management.
     """
     try:
         supabase = get_supabase_client()
-        # Only return calendars that are included in checks
-        response = supabase.table('calendar_list').select('*').eq('user_id', user_id).eq('calendar_type', 'google').eq('to_include_in_check', True).execute()
+        # Return all calendars with their current inclusion status
+        response = supabase.table('calendar_list').select('*').eq('user_id', user_id).eq('calendar_type', 'google').execute()
         return {"success": True, "calendars": response.data or []}
     except Exception as e:
         return {"success": False, "error": str(e)}

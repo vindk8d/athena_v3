@@ -7,7 +7,7 @@ import { User } from '@supabase/supabase-js'
 import { 
   syncUserCalendars, 
   getUserCalendars, 
-  updateCalendarInclusion, 
+  updateCalendarAgentAccess, 
   CalendarListEntry 
 } from '../lib/calendar-management'
 
@@ -98,9 +98,17 @@ export default function Home() {
           const hasCalendarAccess = userCred?.access_token !== null && userCred?.access_token !== undefined
           setCalendarConnected(hasCalendarAccess)
           
-          // If calendar is connected, sync calendars and load them
+          // If calendar is connected, load calendars from database first
           if (hasCalendarAccess) {
-            await syncCalendarsAndLoad(session.user.id)
+            // Try to load existing calendars from database first
+            const userCalendars = await getUserCalendars(session.user.id)
+            if (userCalendars.length > 0) {
+              // If calendars exist in database, just load them
+              setCalendars(userCalendars)
+            } else {
+              // If no calendars in database, sync from Google
+              await syncCalendarsAndLoad(session.user.id)
+            }
           }
         }
       } catch (error) {
@@ -145,14 +153,21 @@ export default function Home() {
 
   const syncCalendarsAndLoad = async (userId: string) => {
     setSyncingCalendars(true)
-    setSyncMessage('Syncing calendars...')
     
     try {
-      // Sync calendars from Google
+      // First, load existing calendars from database to show current settings quickly
+      setSyncMessage('Loading current settings...')
+      const existingCalendars = await getUserCalendars(userId)
+      if (existingCalendars.length > 0) {
+        setCalendars(existingCalendars)
+      }
+      
+      // Then sync calendars from Google to ensure everything is up to date
+      setSyncMessage('Syncing with Google Calendar...')
       const syncResult = await syncUserCalendars(userId)
       if (syncResult.success) {
         setSyncMessage('Calendars synced successfully!')
-        // Load calendars from database
+        // Load updated calendars from database
         const userCalendars = await getUserCalendars(userId)
         setCalendars(userCalendars)
       } else {
@@ -171,19 +186,19 @@ export default function Home() {
     if (!user) return
     
     const newValue = !currentValue
-    const result = await updateCalendarInclusion(user.id, calendarId, newValue)
+    const result = await updateCalendarAgentAccess(user.id, calendarId, newValue)
     
     if (result.success) {
       // Update local state
       setCalendars(prev => 
         prev.map(cal => 
           cal.calendar_id === calendarId 
-            ? { ...cal, to_include_in_check: newValue }
+            ? { ...cal, to_read_by_agent: newValue }
             : cal
         )
       )
     } else {
-      console.error('Error updating calendar inclusion:', result.error)
+      console.error('Error updating calendar agent access:', result.error)
     }
   }
 
@@ -469,7 +484,7 @@ export default function Home() {
               )}
               
               <p className="text-sm text-black dark:text-white mb-4">
-                Select which calendars to include when checking your availability:
+                Control which calendars the AI agent can read for availability checks and scheduling:
               </p>
               
               {calendars.length === 0 ? (
@@ -478,7 +493,15 @@ export default function Home() {
                 </div>
               ) : (
                 <div className="space-y-3">
-                  {calendars.map((calendar) => (
+                  {calendars
+                    .sort((a, b) => {
+                      // Always place primary calendar first
+                      if (a.is_primary && !b.is_primary) return -1;
+                      if (!a.is_primary && b.is_primary) return 1;
+                      // Then sort by calendar name
+                      return a.calendar_name.localeCompare(b.calendar_name);
+                    })
+                    .map((calendar) => (
                     <div key={calendar.calendar_id} className="flex items-center justify-between p-3 border rounded bg-white dark:bg-neutral-900 hover:bg-gray-50 dark:hover:bg-neutral-800">
                       <div className="flex-1">
                         <div className="flex items-center space-x-2">
@@ -487,27 +510,24 @@ export default function Home() {
                             <span className="bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200 text-xs px-2 py-1 rounded">Primary</span>
                           )}
                         </div>
-                        <div className="text-sm text-black dark:text-white">
+                        <div className="text-xs text-gray-600 dark:text-gray-400 mt-1 text-left">
                           {calendar.access_role} • {calendar.timezone}
                         </div>
                       </div>
                       <label className="flex items-center cursor-pointer">
                         <input
                           type="checkbox"
-                          checked={calendar.to_include_in_check}
-                          onChange={() => handleCalendarToggle(calendar.calendar_id, calendar.to_include_in_check)}
+                          checked={calendar.to_read_by_agent}
+                          onChange={() => handleCalendarToggle(calendar.calendar_id, calendar.to_read_by_agent)}
                           className="sr-only"
                         />
                         <div className={`relative w-11 h-6 transition-colors duration-200 ease-in-out rounded-full ${
-                          calendar.to_include_in_check ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-700'
+                          calendar.to_read_by_agent ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-700'
                         }`}>
                           <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white dark:bg-neutral-900 rounded-full transition-transform duration-200 ease-in-out ${
-                            calendar.to_include_in_check ? 'transform translate-x-5' : ''
+                            calendar.to_read_by_agent ? 'transform translate-x-5' : ''
                           }`} />
                         </div>
-                        <span className="ml-2 text-sm text-black dark:text-white">
-                          {calendar.to_include_in_check ? 'Included' : 'Excluded'}
-                        </span>
                       </label>
                     </div>
                   ))}

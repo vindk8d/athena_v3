@@ -177,10 +177,10 @@ async def parse_time_period_tool(time_period: str) -> str:
         Formatted string with start and end times, or error message
     """
     try:
-        # Get user context for timezone
+        # Get user context for timezone (more efficient to use cache)
         try:
             user_id = get_current_user_id()
-            user_timezone = get_user_timezone(user_id)
+            user_timezone = get_timezone_from_cache()  # Use cache instead of DB query
         except ValueError:
             # Demo mode fallback
             user_timezone = "UTC"
@@ -260,8 +260,8 @@ def get_supabase_client():
     return create_client(supabase_url, supabase_key)
 
 def get_user_calendar_query_base(user_id: str, supabase_client):
-    """Get base query for user calendars with to_include_in_check filter applied."""
-    return supabase_client.table('calendar_list').select('*').eq('user_id', user_id).eq('calendar_type', 'google').eq('to_include_in_check', True)
+    """Get base query for user calendars with to_read_by_agent filter applied."""
+    return supabase_client.table('calendar_list').select('*').eq('user_id', user_id).eq('calendar_type', 'google').eq('to_read_by_agent', True)
 
 def get_included_calendars(user_id: str) -> List[str]:
     """Get list of calendar IDs that should be included in availability checks, ordered by write access."""
@@ -272,7 +272,7 @@ def get_included_calendars(user_id: str) -> List[str]:
             return []
         
         # Get calendars with write access priority: primary first, then owner/writer, then others
-        response = supabase.table('calendar_list').select('calendar_id, access_role, is_primary').eq('user_id', user_id).eq('calendar_type', 'google').eq('to_include_in_check', True).execute()
+        response = supabase.table('calendar_list').select('calendar_id, access_role, is_primary').eq('user_id', user_id).eq('calendar_type', 'google').eq('to_read_by_agent', True).execute()
         
         if response.data:
             # Separate calendars by access level
@@ -327,8 +327,8 @@ def get_calendar_timezone(user_id: str, calendar_id: str) -> str:
         if not supabase:
             logger.error("Could not initialize Supabase client")
             return "UTC"
-        # Only get timezone for calendars that are included in checks
-        response = supabase.table('calendar_list').select('timezone').eq('user_id', user_id).eq('calendar_id', calendar_id).eq('to_include_in_check', True).execute()
+        # Only get timezone for calendars that are readable by agent
+        response = supabase.table('calendar_list').select('timezone').eq('user_id', user_id).eq('calendar_id', calendar_id).eq('to_read_by_agent', True).execute()
         if response.data and response.data[0].get('timezone'):
             return response.data[0]['timezone']
         return "UTC"
@@ -1018,7 +1018,7 @@ async def create_event_tool(title: str, time_reference: str, duration_minutes: i
                     for fallback_calendar in calendar_ids[1:]:
                         try:
                             # Check if this calendar has write access
-                            calendar_info = supabase.table('calendar_list').select('access_role').eq('user_id', user_id).eq('calendar_id', fallback_calendar).eq('to_include_in_check', True).execute()
+                            calendar_info = supabase.table('calendar_list').select('access_role').eq('user_id', user_id).eq('calendar_id', fallback_calendar).eq('to_read_by_agent', True).execute()
                             if calendar_info.data and calendar_info.data[0].get('access_role') in ['owner', 'writer']:
                                 logger.info(f"Trying fallback calendar: {fallback_calendar}")
                                 fallback_timezone = get_calendar_timezone(user_id, fallback_calendar)
@@ -1115,6 +1115,10 @@ def get_events_tool(start_datetime: str, end_datetime: str) -> str:
             if not calendar_ids:
                 return "No calendars configured for checking events. Please configure calendars in the web interface."
             
+            # Get user's timezone from cache for proper event display
+            user_timezone = get_timezone_from_cache()
+            logger.info(f"🕐 TIMEZONE DEBUG: Using user timezone '{user_timezone}' for event display")
+            
             service = get_calendar_service()
             all_events = []
             
@@ -1124,7 +1128,8 @@ def get_events_tool(start_datetime: str, end_datetime: str) -> str:
                     # Convert datetime to date for the API call
                     start_date = start_datetime.split('T')[0]
                     end_date = end_datetime.split('T')[0]
-                    events = service.get_events(calendar_id, start_date, end_date)
+                    # Pass user timezone to get_events for proper timezone handling
+                    events = service.get_events(calendar_id, start_date, end_date, user_timezone)
                     # Add calendar_id to each event for tracking
                     for event in events:
                         event['calendar_id'] = calendar_id
@@ -1138,9 +1143,42 @@ def get_events_tool(start_datetime: str, end_datetime: str) -> str:
             # Sort events by start time
             all_events.sort(key=lambda x: x['start'])
             
-            result = f"Events from {start_datetime} to {end_datetime}:\n"
+            # Helper function to convert UTC time to user timezone for display
+            def convert_to_user_timezone_display(utc_time_str: str) -> str:
+                """Convert UTC datetime string to user timezone for display."""
+                try:
+                    if not utc_time_str:
+                        return utc_time_str
+                    
+                    # Parse the datetime string
+                    if utc_time_str.endswith('Z'):
+                        # UTC time
+                        dt = datetime.fromisoformat(utc_time_str.replace('Z', '+00:00'))
+                    elif '+' in utc_time_str or utc_time_str.endswith('00:00'):
+                        # Already has timezone info
+                        dt = datetime.fromisoformat(utc_time_str)
+                    else:
+                        # Assume UTC if no timezone info
+                        dt = datetime.fromisoformat(utc_time_str + '+00:00')
+                    
+                    # Convert to user timezone
+                    user_tz = pytz.timezone(user_timezone)
+                    localized_dt = dt.astimezone(user_tz)
+                    
+                    # Return in a readable format with timezone
+                    return localized_dt.strftime('%Y-%m-%d %H:%M:%S %Z')
+                    
+                except Exception as e:
+                    logger.warning(f"Error converting time '{utc_time_str}' to user timezone: {e}")
+                    return utc_time_str  # Return original if conversion fails
+            
+            result = f"Events from {start_datetime} to {end_datetime} (displayed in {user_timezone}):\n"
             for event in all_events:
-                result += f"- {event['summary']} ({event['start']} - {event['end']})\n"
+                # Convert start and end times to user timezone for display
+                start_display = convert_to_user_timezone_display(event['start'])
+                end_display = convert_to_user_timezone_display(event['end'])
+                
+                result += f"- {event['summary']} ({start_display} - {end_display})\n"
                 result += f"  Event ID: {event['id']}\n"
                 result += f"  Calendar: {event['calendar_id']}\n"
                 if event['location']:
@@ -1268,6 +1306,8 @@ def modify_event_tool(event_id: str, calendar_id: str = None, title: str = None,
         try:
             user_id = get_current_user_id()
             calendar_ids = get_calendar_ids_from_cache()
+            user_timezone = get_timezone_from_cache()  # Get user's timezone from cache
+            
             if not calendar_ids:
                 return "No calendars configured. Please configure calendars in the web interface."
             
@@ -1314,12 +1354,14 @@ def modify_event_tool(event_id: str, calendar_id: str = None, title: str = None,
             if start_datetime is not None:
                 update_body['start'] = {
                     'dateTime': start_datetime,
-                    'timeZone': current_event.get('start', {}).get('timeZone', 'UTC')
+                    # Use user's timezone as fallback instead of UTC
+                    'timeZone': current_event.get('start', {}).get('timeZone', user_timezone)
                 }
             if end_datetime is not None:
                 update_body['end'] = {
                     'dateTime': end_datetime,
-                    'timeZone': current_event.get('end', {}).get('timeZone', 'UTC')
+                    # Use user's timezone as fallback instead of UTC
+                    'timeZone': current_event.get('end', {}).get('timeZone', user_timezone)
                 }
             if description is not None:
                 update_body['description'] = description
@@ -1605,14 +1647,21 @@ async def get_available_slots_for_period_tool(time_period: str, duration_minutes
                 # Demo mode for LangGraph Studio
                 logger.info("Running in demo mode - no user context available")
                 
-                # Use UTC for demo mode
-                current_datetime = datetime.now(pytz.UTC)
+                # Try to get user timezone from cache, fallback to UTC only in demo mode
+                try:
+                    demo_timezone = get_timezone_from_cache()
+                    current_datetime = datetime.now(pytz.timezone(demo_timezone))
+                    timezone_display = demo_timezone
+                except:
+                    # Final fallback to UTC if cache is not available in demo mode
+                    current_datetime = datetime.now(pytz.UTC)
+                    timezone_display = "UTC"
                 
                 # Demo response with sample available slots
                 result = f"✅ Demo mode: Available {duration_minutes}-minute slots for {time_period}:\n"
-                result += f"1. {current_datetime.strftime('%Y-%m-%d')} 09:00 - 09:30 UTC\n"
-                result += f"2. {current_datetime.strftime('%Y-%m-%d')} 10:00 - 10:30 UTC\n"
-                result += f"3. {current_datetime.strftime('%Y-%m-%d')} 14:00 - 14:30 UTC\n"
+                result += f"1. {current_datetime.strftime('%Y-%m-%d')} 09:00 - 09:30 {timezone_display}\n"
+                result += f"2. {current_datetime.strftime('%Y-%m-%d')} 10:00 - 10:30 {timezone_display}\n"
+                result += f"3. {current_datetime.strftime('%Y-%m-%d')} 14:00 - 14:30 {timezone_display}\n"
                 result += f"\nNote: This is a demo response. In production, this would check your actual Google Calendar."
                 
                 return result
@@ -1642,6 +1691,7 @@ def find_event_tool(search_criteria: str, start_datetime: str = None, end_dateti
         try:
             user_id = get_current_user_id()
             calendar_ids = get_calendar_ids_from_cache()
+            user_timezone = get_timezone_from_cache()  # Get user's timezone from cache
             
             if not calendar_ids:
                 return "No calendars configured for searching events. Please configure calendars in the web interface."
@@ -1652,7 +1702,8 @@ def find_event_tool(search_criteria: str, start_datetime: str = None, end_dateti
             # If no date range provided, search in a reasonable range (last 30 days to next 90 days)
             if not start_datetime or not end_datetime:
                 from datetime import timedelta
-                current_time = datetime.now(pytz.UTC)
+                # Use user's timezone instead of UTC
+                current_time = datetime.now(pytz.timezone(user_timezone))
                 default_start = (current_time - timedelta(days=30)).isoformat()
                 default_end = (current_time + timedelta(days=90)).isoformat()
                 start_datetime = start_datetime or default_start
@@ -1664,7 +1715,8 @@ def find_event_tool(search_criteria: str, start_datetime: str = None, end_dateti
                     # Convert datetime to date for the API call
                     start_date = start_datetime.split('T')[0]
                     end_date = end_datetime.split('T')[0]
-                    events = service.get_events(calendar_id, start_date, end_date)
+                    # Pass user timezone to get_events for proper timezone handling
+                    events = service.get_events(calendar_id, start_date, end_date, user_timezone)
                     # Add calendar_id to each event for tracking
                     for event in events:
                         event['calendar_id'] = calendar_id
@@ -2624,7 +2676,7 @@ When colleagues give confirmations (like "ok go ahead", "yes", "sure"):
 - If you just asked "Shall I create this meeting?" and they confirm, IMMEDIATELY proceed with creating the meeting
 - If you asked for confirmation about any action and they confirm, proceed with that action
 - Don't ask for redundant details if you have sufficient information from conversation history
-- Use natural acknowledgments: "Perfect! Let me get that scheduled for [user nickname]" or "Great! I'll set that up right away."
+- Use natural acknowledgments: "Perfect! Let me get that scheduled for you and {user_nickname}, {colleague_nickname}."
 
 EXAMPLES of natural colleague interaction:
 Colleague: "Can John meet tomorrow at 2 PM?"

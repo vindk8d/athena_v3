@@ -18,7 +18,7 @@ export interface CalendarListEntry {
   is_primary: boolean
   access_role: string
   timezone: string
-  to_include_in_check: boolean
+  to_read_by_agent: boolean
   metadata: any
   created_at: string
   updated_at: string
@@ -60,16 +60,16 @@ export async function getUserCalendars(userId: string): Promise<CalendarListEntr
 /**
  * Update calendar inclusion preference in Supabase directly (no change needed)
  */
-export async function updateCalendarInclusion(
+export async function updateCalendarAgentAccess(
   userId: string, 
   calendarId: string, 
-  toInclude: boolean
+  agentCanRead: boolean
 ): Promise<{ success: boolean; error?: string }> {
   const supabase = createClient()
   const { error } = await supabase
     .from('calendar_list')
     .update({ 
-      to_include_in_check: toInclude,
+      to_read_by_agent: agentCanRead,
       updated_at: new Date().toISOString()
     })
     .eq('user_id', userId)
@@ -82,16 +82,16 @@ export async function updateCalendarInclusion(
 }
 
 /**
- * Get calendars that should be included in availability checks (from Supabase)
+ * Get calendars that the agent should read (from Supabase)
  */
-export async function getIncludedCalendars(userId: string): Promise<string[]> {
+export async function getAgentReadableCalendars(userId: string): Promise<string[]> {
   const supabase = createClient()
   const { data: calendars, error } = await supabase
     .from('calendar_list')
     .select('calendar_id')
     .eq('user_id', userId)
     .eq('calendar_type', 'google')
-    .eq('to_include_in_check', true)
+    .eq('to_read_by_agent', true)
   if (error) {
     return []
   }

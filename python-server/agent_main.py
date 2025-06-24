@@ -583,7 +583,7 @@ def initialize_user_context_cache(user_id: str, contact_id: str) -> None:
         colleague_info = get_colleague_info(user_id, contact_id)
         logger.info(f"✅ CACHE DEBUG: Colleague info fetched successfully: {list(colleague_info.keys()) if colleague_info else 'EMPTY'}")
         if colleague_info:
-            logger.info(f"✅ CACHE DEBUG: Colleague name='{colleague_info.get('name')}', nickname='{colleague_info.get('nickname')}'")
+            logger.info(f"✅ CACHE DEBUG: Colleague name='{colleague_info.get('name')}', nickname='{colleague_info.get('nickname')}', email='{colleague_info.get('email')}'")
         
         logger.info(f"🔍 CACHE DEBUG: Fetching calendar IDs for user_id='{user_id}'")
         calendar_ids = get_included_calendars(user_id)
@@ -943,12 +943,13 @@ async def create_event_tool(title: str, time_reference: str, duration_minutes: i
     """Create a new calendar event on the user's primary calendar.
     
     This tool creates calendar events with full Google Calendar integration.
+    Automatically includes the colleague's email as an attendee when creating meetings.
     
     Args:
         title: Meeting title (required)
         time_reference: Natural language time reference (e.g., "tomorrow at 2 PM", "next monday at 10 AM")
         duration_minutes: Duration in minutes (default: 30)
-        attendee_emails: List of attendee email addresses (optional)
+        attendee_emails: List of additional attendee email addresses (optional - colleague's email is automatically included)
         description: Meeting description (optional)
         location: Meeting location (optional)
     """
@@ -995,10 +996,26 @@ async def create_event_tool(title: str, time_reference: str, duration_minutes: i
             primary_calendar = calendar_ids[0]
             calendar_timezone = get_calendar_timezone(user_id, primary_calendar)
             
-            # Filter out empty/invalid attendee emails before passing to service
+            # Automatically include the colleague's email from cache
             filtered_attendees = []
+            
+            # Get colleague info from cache and include their email
+            colleague_info = get_colleague_info_from_cache()
+            colleague_email = colleague_info.get('email', '').strip()
+            if colleague_email:
+                filtered_attendees.append(colleague_email)
+                logger.info(f"✅ Automatically including colleague email: {colleague_email}")
+            else:
+                logger.warning("⚠️ No colleague email found in cache - meeting will be created without colleague as attendee")
+            
+            # Add any additional attendee emails provided
             if attendee_emails:
-                filtered_attendees = [email.strip() for email in attendee_emails if email and email.strip()]
+                for email in attendee_emails:
+                    email_clean = email.strip()
+                    if email_clean and email_clean not in filtered_attendees:
+                        filtered_attendees.append(email_clean)
+            
+            logger.info(f"📧 Final attendee list: {filtered_attendees}")
             
             try:
                 event = service.create_event(
@@ -1038,16 +1055,27 @@ async def create_event_tool(title: str, time_reference: str, duration_minutes: i
                     # Re-raise other types of errors
                     raise create_error
             
-            result = f"✅ Meeting scheduled successfully on your calendar!\n"
+            # Get colleague info for response formatting
+            colleague_nickname = colleague_info.get('nickname', colleague_info.get('name', 'the colleague'))
+            
+            result = f"✅ Meeting scheduled successfully!\n"
             result += f"Title: {event['summary']}\n"
             result += f"Time: {event['start']} to {event['end']}\n"
             result += f"Event ID: {event['id']}\n"
             if filtered_attendees:
-                result += f"Attendees: {', '.join(filtered_attendees)}\n"
+                if colleague_email and colleague_email in filtered_attendees:
+                    result += f"Attendees: {colleague_nickname} and {len(filtered_attendees) - 1} other(s)" if len(filtered_attendees) > 1 else f"Attendees: {colleague_nickname}"
+                    result += f" ({', '.join(filtered_attendees)})\n"
+                else:
+                    result += f"Attendees: {', '.join(filtered_attendees)}\n"
             if location:
                 result += f"Location: {location}\n"
             if event.get('html_link'):
                 result += f"📅 View/Edit Event: {event['html_link']}\n"
+            
+            # Add confirmation message mentioning both parties will receive invites
+            if colleague_email:
+                result += f"\n🎉 Both you and {colleague_nickname} will receive calendar invites!"
             
             return result
             
@@ -1076,15 +1104,19 @@ async def create_event_tool(title: str, time_reference: str, duration_minutes: i
                     return "❌ Invalid datetime format. Please use ISO format (e.g., 2024-01-15T10:00:00+00:00)"
                 
                 # Demo response
+                all_attendees = []
+                if attendee_emails:
+                    all_attendees.extend(attendee_emails)
+                all_attendees.append("colleague@example.com")  # Demo colleague email
+                
                 result = f"✅ Demo mode: Meeting would be scheduled successfully!\n"
                 result += f"Title: {title}\n"
                 result += f"Time: {start_datetime} to {end_datetime}\n"
                 result += f"Event ID: demo_event_12345\n"
-                if attendee_emails:
-                    result += f"Attendees: {', '.join(attendee_emails)}\n"
+                result += f"Attendees: {', '.join(all_attendees)}\n"
                 if location:
                     result += f"Location: {location}\n"
-                result += f"\nNote: This is a demo response. In production, this would create the event in your actual Google Calendar."
+                result += f"\nNote: This is a demo response. In production, this would create the event in your actual Google Calendar with the colleague automatically included as an attendee."
                 
                 return result
             else:
@@ -2650,6 +2682,9 @@ Your role is to help users manage their calendar and schedule meetings efficient
 5. **Create Meeting**: Use calendar tools to create the meeting in Google Calendar
 6. **Confirm Booking**: Provide confirmation to the colleague
 
+## AUTOMATIC ATTENDEE INCLUSION:
+🎯 **IMPORTANT**: When creating meetings with create_event_tool, the colleague's email is AUTOMATICALLY included as an attendee. You don't need to specify their email in the attendee_emails parameter - it's handled automatically from the cached colleague information. This ensures the colleague always receives calendar invites.
+
 ## Calendar Tool Usage Requirements:
 - **Always use calendar tools** for any calendar-related operations
 - **Never skip tool usage** when calendar operations are needed
@@ -2962,6 +2997,11 @@ CRITICAL WORKFLOW:
 5. Use check_availability_tool to verify {user_nickname}'s calendar
 6. If available, proceed with booking; if not, suggest alternatives
 
+🎯 AUTOMATIC ATTENDEE HANDLING:
+- The colleague's email is AUTOMATICALLY included when creating meetings
+- You don't need to specify {colleague_nickname}'s email in attendee_emails - it's handled automatically
+- This ensures {colleague_nickname} always receives calendar invites
+
 CONFIRMATION HANDLING:
 - If {colleague_nickname} confirms ("ok go ahead", "yes", "sure") and you have sufficient information, proceed immediately
 - If you just asked "Shall I schedule this meeting?" and they confirm, create the meeting now
@@ -3063,6 +3103,11 @@ CRITICAL WORKFLOW:
 3. Use check_availability_tool to verify {user_nickname}'s calendar before proceeding
 4. If the requested time is not available, gracefully decline and suggest alternatives
 5. Only proceed with booking after confirming availability
+
+🎯 AUTOMATIC ATTENDEE HANDLING:
+- The colleague's email is AUTOMATICALLY included when creating meetings
+- You don't need to specify {colleague_nickname}'s email in attendee_emails - it's handled automatically
+- This ensures {colleague_nickname} always receives calendar invites
 
 COLLEAGUE INTERACTION:
 - Address {colleague_nickname} warmly and professionally

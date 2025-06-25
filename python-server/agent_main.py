@@ -2197,11 +2197,10 @@ class SimpleAthenaAgent:
         }
         
         # Create agents with appropriate models
-        self.intent_classifier = self._create_intent_classifier()
         self.execution_decider = self._create_execution_decider()
         
-        # Create the graph
-        self.graph = self._create_graph()
+        # Graph will be created when needed (it's async)
+        self._compiled_graph = None
         
         logger.info(f"Simple Athena agent initialized with model tiering:")
         logger.info(f"  - Simple tasks (intent/summary): {simple_model}")
@@ -2227,29 +2226,6 @@ class SimpleAthenaAgent:
             "cost_ratio": f"{self.model_usage['simple_model_calls']}:{self.model_usage['complex_model_calls']}"
         }
     
-    def _create_intent_classifier(self):
-        """Create intent classifier agent using simple model."""
-        intent_prompt = ChatPromptTemplate.from_messages([
-            ("system", """You classify colleague messages to Athena (executive assistant).
-
-Return ONLY the intent name:
-
-• general_conversation: Greetings, casual chat
-• clarification_answer: Responding to assistant questions ("yes", "ok", "go ahead") 
-• meeting_request: Want to schedule meetings ("schedule", "meet", "book")
-• calendar_inquiry: Want to view existing events ("what's on calendar")
-• availability_inquiry: Check free time ("when free", "availability")
-• meeting_modification: Change/cancel meetings (decline - security)
-• time_question: Ask about time/timezone
-
-Key: If responding to assistant question → clarification_answer"""),
-            MessagesPlaceholder(variable_name="messages"),
-            MessagesPlaceholder(variable_name="agent_scratchpad"),
-        ])
-        
-        # Use simple model for intent classification
-        return create_tool_calling_agent(self.simple_llm, [], intent_prompt)
-    
     def _create_execution_decider(self):
         """Create execution decider agent using complex model."""
         execution_prompt = ChatPromptTemplate.from_messages([
@@ -2266,7 +2242,7 @@ WORKFLOW:
 COMMUNICATION:
 - Address colleague directly by their name/nickname
 - Professional, warm, concise
-- First interaction: "Hi [colleague_name]! I'm Athena, [user_name]'s assistant."
+- Use actual names from context (not placeholders)
 
 RESPONSES BY INTENT:
 • clarification_answer: Process confirmations immediately, continue workflow
@@ -2431,31 +2407,44 @@ Summary:"""
             elif hasattr(latest_message, 'content'):
                 latest_message_content = latest_message.content
         
-        # Prepare context with conversation summary and recent messages
-        context_messages = []
-        
-        # Add conversation summary if available
+        # Add conversation context for better intent classification
+        context_info = ""
         conversation_summary = state.get("conversation_summary")
         if conversation_summary:
-            summary_message = SystemMessage(content=f"CONVERSATION SUMMARY: {conversation_summary}")
-            context_messages.append(summary_message)
+            context_info = f"Context: {conversation_summary[:200]}...\n\n"
         
-        # Add recent messages for immediate context
-        recent_messages = state["messages"][-5:] if len(state["messages"]) > 1 else [HumanMessage(content=latest_message_content)]
-        context_messages.extend(recent_messages)
-        
-        # Log context for debugging
-        logger.info(f"Intent classification context ({len(context_messages)} messages, summary: {'Yes' if conversation_summary else 'No'}):")
-        for i, msg in enumerate(context_messages):
-            msg_type = type(msg).__name__
-            content_preview = msg.content[:100] + "..." if len(msg.content) > 100 else msg.content
-            logger.info(f"  {i+1}. {msg_type}: {content_preview}")
-        
-        agent_executor = AgentExecutor(agent=self.intent_classifier, tools=[], verbose=True)
+        # Prepare input for the intent classifier chain
+        full_input = f"{context_info}Message to classify: {latest_message_content}"
         
         try:
-            result = await agent_executor.ainvoke({"messages": context_messages})
-            intent = result["output"].strip().lower()
+            # Create messages for intent classification with system prompt
+            intent_messages = [
+                SystemMessage(content="""You classify colleague messages to Athena (executive assistant).
+
+Return ONLY the intent name from this list:
+
+• general_conversation: Greetings, casual chat, questions about the assistant
+• clarification_answer: Responding to assistant questions ("yes", "ok", "go ahead") 
+• meeting_request: Want to schedule meetings ("schedule", "meet", "book")
+• calendar_inquiry: Want to view existing events ("what's on calendar", "show meetings")
+• availability_inquiry: Check free time ("when free", "availability", "open slots")
+• meeting_modification: Change/cancel meetings (decline - security)
+• time_question: Ask about time/timezone
+
+CRITICAL: Return ONLY the intent name, nothing else. No explanations, no sentences.
+
+Examples:
+- "Hi there" → general_conversation
+- "Can we schedule a meeting?" → meeting_request
+- "When are you free?" → availability_inquiry
+- "What's on my calendar today?" → calendar_inquiry
+- "Yes, that works" → clarification_answer"""),
+                HumanMessage(content=full_input)
+            ]
+            
+            # Use the simple LLM with usage tracking
+            result = await self._call_simple_llm(intent_messages)
+            intent = result.content.strip().lower()
             
             # Clean up the intent - remove markdown formatting and extra characters
             intent = intent.replace('*', '').replace('`', '').replace('"', '').replace("'", '').strip()
@@ -2498,10 +2487,12 @@ Summary:"""
         colleague_name = colleague_info.get('name', 'there')
         colleague_nickname = colleague_info.get('nickname', colleague_name)
         
+        logger.info(f"🔍 EXECUTION DEBUG: user_name='{user_name}', user_nickname='{user_nickname}', colleague_name='{colleague_name}', colleague_nickname='{colleague_nickname}'")
+        
         # Use recent messages for context
         messages = state["messages"][-3:] if len(state["messages"]) > 1 else state["messages"].copy()
         
-        # Add concise context based on intent
+        # Add concise context based on intent with actual names
         if message_intent == "clarification_answer":
             context = SystemMessage(content=f"""You're helping {colleague_nickname} schedule with {user_nickname}. They're responding to your previous question.
 
@@ -2540,9 +2531,11 @@ SECURITY: Only create new meetings, never modify/delete existing ones.""")
             
         except Exception as e:
             logger.error(f"Calendar execution error: {e}")
+            # Fallback response with actual names
+            fallback_response = f"Hi {colleague_nickname}! I'm Athena, {user_nickname}'s assistant. I'd be happy to help you with scheduling. Could you provide a bit more detail about what you'd like me to do?"
             return {
                 **state,
-                "messages": state["messages"] + [AIMessage(content="I'd be happy to help you with that! Could you provide a bit more detail about what you'd like me to do?")]
+                "messages": state["messages"] + [AIMessage(content=fallback_response)]
             }
     
 
@@ -2567,7 +2560,9 @@ SECURITY: Only create new meetings, never modify/delete existing ones.""")
             thread_id = set_current_thread_context(user_id, contact_id)
             
             # Get the compiled graph (with or without custom checkpointer based on environment)
-            graph = await self._create_graph()
+            if not self._compiled_graph:
+                self._compiled_graph = await self._create_graph()
+            graph = self._compiled_graph
             
             # Check if this is a continuing conversation by getting existing state
             try:
@@ -2651,7 +2646,9 @@ SECURITY: Only create new meetings, never modify/delete existing ones.""")
         """Clear conversation history for a specific contact."""
         try:
             thread_id = f"athena_{user_id}_{contact_id}"
-            graph = await self._create_graph()
+            if not self._compiled_graph:
+                self._compiled_graph = await self._create_graph()
+            graph = self._compiled_graph
             
             # Clear the checkpoint by creating a new empty state
             await graph.ainvoke(
@@ -2683,7 +2680,9 @@ SECURITY: Only create new meetings, never modify/delete existing ones.""")
         """Get conversation summary for a specific contact."""
         try:
             thread_id = f"athena_{user_id}_{contact_id}"
-            graph = await self._create_graph()
+            if not self._compiled_graph:
+                self._compiled_graph = await self._create_graph()
+            graph = self._compiled_graph
             
             # Get the current state
             state = await graph.aget_state({"configurable": {"thread_id": thread_id}})
@@ -2717,7 +2716,9 @@ SECURITY: Only create new meetings, never modify/delete existing ones.""")
         """Get comprehensive conversation state using LangGraph's built-in state management."""
         try:
             thread_id = f"athena_{user_id}_{contact_id}"
-            graph = await self._create_graph()
+            if not self._compiled_graph:
+                self._compiled_graph = await self._create_graph()
+            graph = self._compiled_graph
             
             # Get the current state snapshot
             state_snapshot = await graph.aget_state({"configurable": {"thread_id": thread_id}})

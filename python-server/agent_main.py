@@ -2230,28 +2230,19 @@ class SimpleAthenaAgent:
     def _create_intent_classifier(self):
         """Create intent classifier agent using simple model."""
         intent_prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are an intent classifier for Athena, an executive assistant AI.
+            ("system", """You classify colleague messages to Athena (executive assistant).
 
-Analyze colleague messages in context of conversation summary + recent messages. Return ONLY the intent name.
+Return ONLY the intent name:
 
-INTENTS:
-• general_conversation: Greetings, casual chat, off-topic
-• clarification_answer: Responding to assistant questions, confirmations ("yes", "ok", "go ahead"), providing requested details
-• meeting_request: Want to schedule/create new meetings ("schedule", "meet", "book")
-• calendar_inquiry: Want to view existing events ("what's on calendar", "show meetings")
-• availability_inquiry: Check free time ("when free", "availability", "open slots")
-• meeting_modification: Change/cancel existing meetings (politely decline - security)
-• time_question: Ask about time/timezone info
+• general_conversation: Greetings, casual chat
+• clarification_answer: Responding to assistant questions ("yes", "ok", "go ahead") 
+• meeting_request: Want to schedule meetings ("schedule", "meet", "book")
+• calendar_inquiry: Want to view existing events ("what's on calendar")
+• availability_inquiry: Check free time ("when free", "availability")
+• meeting_modification: Change/cancel meetings (decline - security)
+• time_question: Ask about time/timezone
 
-KEY RULES:
-1. If responding to assistant question/confirmation request → clarification_answer
-2. If providing meeting details after assistant asked → clarification_answer  
-3. Simple confirmations ("ok", "yes", "sure") after assistant questions → clarification_answer
-
-Examples:
-Assistant asks "Shall I create this meeting?" → User: "ok go ahead" → clarification_answer
-User: "Schedule a meeting tomorrow" → meeting_request
-User: "What's on my calendar?" → calendar_inquiry"""),
+Key: If responding to assistant question → clarification_answer"""),
             MessagesPlaceholder(variable_name="messages"),
             MessagesPlaceholder(variable_name="agent_scratchpad"),
         ])
@@ -2262,41 +2253,38 @@ User: "What's on my calendar?" → calendar_inquiry"""),
     def _create_execution_decider(self):
         """Create execution decider agent using complex model."""
         execution_prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are Athena, executive assistant AI coordinating calendar for your user.
+            ("system", """You are Athena, executive assistant. You're talking TO colleagues who want to coordinate with your user.
 
-CORE ROLE: Schedule meetings between colleagues and your user via Google Calendar API.
-
-CONTEXT ACCESS: Use cached user/colleague details for personalized responses.
+ROLE: Help colleagues schedule meetings with your user via Google Calendar.
 
 WORKFLOW:
-1. Check user calendar availability BEFORE confirming times
-2. Gather: title, time, duration, attendees  
+1. Check user's availability BEFORE confirming times
+2. Gather: title, time, duration
 3. Create meeting if available, suggest alternatives if not
-4. Colleague email auto-included in invites
+4. Colleague's email auto-included in invites
 
 COMMUNICATION:
-- Address colleagues by nickname when available
-- Professional, warm, concise responses
-- First interaction: "Hi [name]! I'm Athena, [user]'s assistant."
+- Address colleague directly by their name/nickname
+- Professional, warm, concise
+- First interaction: "Hi [colleague_name]! I'm Athena, [user_name]'s assistant."
 
-INTENT HANDLING:
-• clarification_answer: Continue previous conversation, process confirmations immediately
-• meeting_request: Check availability → confirm details → book
+RESPONSES BY INTENT:
+• clarification_answer: Process confirmations immediately, continue workflow
+• meeting_request: Check availability → gather details → book
 • availability_inquiry: Use get_available_slots_for_period_tool
 • calendar_inquiry: Use get_events_tool for date ranges
-• meeting_modification: Politely decline - security reasons
+• meeting_modification: Politely decline (security)
 • general_conversation: Friendly response + offer calendar help
 
-TIME PARSING: Convert natural language ("tomorrow 2 PM") to ISO format using tools.
-
-SECURITY: Cannot modify/delete existing events. Only create new meetings.
-
 TOOLS AVAILABLE:
-- check_availability_tool: Verify specific times
+- check_availability_tool: Check specific times ("tomorrow 2 PM")
 - create_event_tool: Book meetings (auto-includes colleague email)
-- get_available_slots_for_period_tool: Find free slots
-- get_events_tool: View existing calendar
-- parse_time_reference_tool: Convert time phrases"""),
+- get_available_slots_for_period_tool: Find free slots ("tomorrow", "next week")
+- get_events_tool: View calendar ("show meetings today")
+- parse_time_reference_tool: Convert natural language times
+- get_current_time_tool: Get current time in timezone
+
+SECURITY: Cannot modify/delete existing events. Only create new meetings."""),
             MessagesPlaceholder(variable_name="messages"),
             MessagesPlaceholder(variable_name="agent_scratchpad"),
         ])
@@ -2499,173 +2487,52 @@ Summary:"""
         """Execute calendar operations and handle all user interactions."""
         logger.info("📅 Calendar Execution Node")
         
-        # Get message intent to determine how to handle this
+        # Get message intent and context data
         message_intent = state.get("message_intent", "")
+        user_details = get_user_details_from_cache()
+        colleague_info = get_colleague_info_from_cache()
         
-        # For clarification answers, include conversation context
+        # Extract names from the actual data sources
+        user_name = user_details.get("name", "the user")
+        user_nickname = user_details.get("nickname", user_name)
+        colleague_name = colleague_info.get('name', 'there')
+        colleague_nickname = colleague_info.get('nickname', colleague_name)
+        
+        # Use recent messages for context
+        messages = state["messages"][-3:] if len(state["messages"]) > 1 else state["messages"].copy()
+        
+        # Add concise context based on intent
         if message_intent == "clarification_answer":
-            logger.info("🔄 Processing clarification answer - including conversation context")
-            # Use the full conversation history for context
-            messages = state["messages"].copy()
+            context = SystemMessage(content=f"""You're helping {colleague_nickname} schedule with {user_nickname}. They're responding to your previous question.
+
+WORKFLOW: Review conversation → check {user_nickname}'s availability → proceed if confirmed.
+COLLEAGUE: Address as {colleague_nickname}. Their email auto-included in meetings.""")
+            messages.insert(-1, context)
             
-            # Get user information for personalized responses
-            user_details = get_user_details_from_cache()
-            user_name = user_details.get("name", "the user")
-            user_nickname = user_details.get("nickname", user_name)
-            logger.info(f"🔍 CACHE DEBUG: Clarification context - user_name='{user_name}', user_nickname='{user_nickname}'")
-            
-            # Get colleague information  
-            logger.info(f"🔍 CACHE DEBUG: Fetching colleague info in clarification_answer context")
-            colleague_info = get_colleague_info_from_cache()
-            logger.info(f"✅ CACHE DEBUG: Colleague info result: {colleague_info}")
-            colleague_name = colleague_info.get('name', 'there')
-            colleague_nickname = colleague_info.get('nickname', colleague_name)
-            
-            # Build nickname display outside f-string to avoid backslash issues
-            clarification_nickname_display = f"(nickname: {colleague_nickname})" if colleague_nickname != colleague_name else ""
-            
-            # Add a system message to help the agent understand this is a clarification
-            clarification_context = SystemMessage(content=f"""The colleague is providing additional information in response to a previous question you asked.
-
-You are Athena, executive assistant to {user_name} (refer to them as "{user_nickname}").
-
-COLLEAGUE CONTEXT:
-- The colleague's name is {colleague_name} {clarification_nickname_display}
-- Address them as {colleague_nickname} throughout the conversation
-
-CRITICAL WORKFLOW:
-1. Review the ENTIRE conversation history to extract ALL relevant information
-2. ALWAYS check {user_nickname}'s availability BEFORE confirming any meeting times  
-3. Extract meeting details: title, time references, duration, attendees
-4. Convert time references to proper datetime format
-5. Use check_availability_tool to verify {user_nickname}'s calendar
-6. If available, proceed with booking; if not, suggest alternatives
-
-🎯 AUTOMATIC ATTENDEE HANDLING:
-- The colleague's email is AUTOMATICALLY included when creating meetings
-- You don't need to specify {colleague_nickname}'s email in attendee_emails - it's handled automatically
-- This ensures {colleague_nickname} always receives calendar invites
-
-CONFIRMATION HANDLING:
-- If {colleague_nickname} confirms ("ok go ahead", "yes", "sure") and you have sufficient information, proceed immediately
-- If you just asked "Shall I schedule this meeting?" and they confirm, create the meeting now
-- Always verify calendar availability before actually booking
-- Use natural responses: "Perfect! Let me get that scheduled for you and {user_nickname}, {colleague_nickname}."
-
-MEETING COORDINATION:
-- Address {colleague_nickname} warmly by their nickname
-- Always mention {user_nickname} when discussing their calendar
-- Use natural language throughout the process""")
-            messages.insert(-1, clarification_context)  # Insert before the last user message
         elif message_intent == "general_conversation":
-            logger.info("💬 Processing general conversation")
-            # For general conversation, use a welcoming response but also mention calendar capabilities
-            messages = state["messages"][-3:] if len(state["messages"]) > 1 else state["messages"].copy()
-            
-            # Get user and colleague information for personalized responses
-            user_details = get_user_details_from_cache()
-            user_name = user_details.get("name", "the user")
-            user_nickname = user_details.get("nickname", user_name)
-            logger.info(f"🔍 CACHE DEBUG: General conversation - user_name='{user_name}', user_nickname='{user_nickname}'")
-            
-            # Get colleague information
-            logger.info(f"🔍 CACHE DEBUG: Fetching colleague info in general_conversation context")
-            colleague_info = get_colleague_info_from_cache()
-            logger.info(f"✅ CACHE DEBUG: Colleague info result: {colleague_info}")
-            colleague_name = colleague_info.get('name', 'there')
-            colleague_nickname = colleague_info.get('nickname', colleague_name)
-            
-            # Check if this is the first interaction (no conversation summary)
             is_first_interaction = not state.get("conversation_summary")
+            intro = f"Hi {colleague_nickname}! I'm Athena, {user_nickname}'s assistant." if is_first_interaction else f"Hi {colleague_nickname}!"
             
-            # Build conditional strings outside the f-string to avoid backslash issues
-            nickname_display = f"(nickname: {colleague_nickname})" if colleague_nickname != colleague_name else ""
-            interaction_context = "This appears to be your first interaction with this colleague - introduce yourself appropriately" if is_first_interaction else "You have an existing relationship with this colleague"
+            context = SystemMessage(content=f"""Colleague engaging in general conversation.
+
+RESPONSE: {intro} Offer to help with scheduling/calendar coordination for {user_nickname}.
+COLLEAGUE: {colleague_name} (address as {colleague_nickname})""")
+            messages.insert(0, context)
             
-            if is_first_interaction:
-                intro_text = f'- Introduce yourself: "Hi {colleague_nickname}! I\'m Athena, {user_nickname}\'s executive assistant."'
-            else:
-                intro_text = f'- Greet the colleague warmly: "Hi {colleague_nickname}!"'
-            
-            general_context = SystemMessage(content=f"""The colleague is engaging in general conversation (greetings, casual chat, etc.). 
+        elif message_intent in ["meeting_request", "calendar_inquiry", "availability_inquiry"]:
+            context = SystemMessage(content=f"""You're coordinating calendar for {user_nickname} with colleague {colleague_nickname}.
 
-CONTEXT:
-- You are Athena, executive assistant to {user_name} (refer to them as "{user_nickname}")
-- The colleague's name is {colleague_name} {nickname_display}
-- {interaction_context}
-- Be warm, friendly, and professional
-
-RESPONSE APPROACH:
-{intro_text}
-- Offer to help with scheduling or calendar coordination for {user_nickname}
-- Keep responses natural and conversational, not robotic
-- Be concise but helpful
-
-CAPABILITIES TO MENTION (if appropriate):
-- Schedule meetings between {colleague_nickname} and {user_nickname}
-- Check {user_nickname}'s availability  
-- Coordinate calendar logistics
-- Handle meeting modifications
-
-Remember: You represent {user_nickname} professionally, so maintain their reputation while being approachable.""")
-            messages.insert(0, general_context)
-        else:
-            # For other intents, use conversation context for better information extraction
-            # Include recent conversation history (max 5 messages) for context
-            messages = state["messages"][-5:] if len(state["messages"]) > 1 else state["messages"].copy()
-            
-            # Get user and colleague information for personalized responses
-            user_details = get_user_details_from_cache()
-            user_name = user_details.get("name", "the user")
-            user_nickname = user_details.get("nickname", user_name)
-            logger.info(f"🔍 CACHE DEBUG: Other intents - user_name='{user_name}', user_nickname='{user_nickname}'")
-            
-            # Get colleague information
-            logger.info(f"🔍 CACHE DEBUG: Fetching colleague info in other intents context")
-            colleague_info = get_colleague_info_from_cache()
-            logger.info(f"✅ CACHE DEBUG: Colleague info result: {colleague_info}")
-            colleague_name = colleague_info.get('name', 'there')
-            colleague_nickname = colleague_info.get('nickname', colleague_name)
-            
-            # Add context for information extraction
-            if message_intent in ["meeting_request", "calendar_inquiry", "availability_inquiry"]:
-                # Build nickname display outside f-string
-                colleague_nickname_display = f"(nickname: {colleague_nickname})" if colleague_nickname != colleague_name else ""
-                
-                extraction_context = SystemMessage(content=f"""You are coordinating calendar requests for {user_name} (refer to them as "{user_nickname}").
-
-COLLEAGUE CONTEXT:
-- The colleague's name is {colleague_name} {colleague_nickname_display}
-- Address them as {colleague_nickname} throughout the conversation
-
-CRITICAL WORKFLOW:
-1. ALWAYS check {user_nickname}'s availability BEFORE confirming any meeting times
-2. Extract ALL relevant information from conversation history:
-   - Time references: Convert "tomorrow", "today", "next week", specific times to proper datetime
-   - Duration: "about an hour" = 60 minutes, "30 min" = 30 minutes  
-   - Meeting details: titles, purposes, attendee information
-3. Use check_availability_tool to verify {user_nickname}'s calendar before proceeding
-4. If the requested time is not available, gracefully decline and suggest alternatives
-5. Only proceed with booking after confirming availability
-
-🎯 AUTOMATIC ATTENDEE HANDLING:
-- The colleague's email is AUTOMATICALLY included when creating meetings
-- You don't need to specify {colleague_nickname}'s email in attendee_emails - it's handled automatically
-- This ensures {colleague_nickname} always receives calendar invites
-
-COLLEAGUE INTERACTION:
-- Address {colleague_nickname} warmly and professionally
-- Always mention you're checking "{user_nickname}'s calendar" when doing availability checks
-- Use natural language: "Let me check {user_nickname}'s schedule for that time, {colleague_nickname}" rather than technical responses""")
-                messages.insert(0, extraction_context)
+WORKFLOW: Check {user_nickname}'s availability BEFORE confirming → gather details → book meeting.
+COLLEAGUE: Address as {colleague_nickname}. Their email auto-included in meetings.
+SECURITY: Only create new meetings, never modify/delete existing ones.""")
+            messages.insert(0, context)
         
-        # Use the execution decider agent with tools
+        # Execute with agent
         agent_executor = AgentExecutor(agent=self.execution_decider, tools=tools, verbose=True)
         
         try:
             result = await agent_executor.ainvoke({"messages": messages})
             response = result["output"]
-            # Use proper message type instead of string appending
             return {
                 **state,
                 "messages": state["messages"] + [AIMessage(content=response)]

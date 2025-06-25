@@ -2692,7 +2692,7 @@ COLLEAGUE INTERACTION:
             # Set up calendar service if needed (only if not already set up)
             if access_token and not _calendar_service:
                 try:
-                    set_calendar_service(access_token, refresh_token, user_id, self.llm)
+                    set_calendar_service(access_token, refresh_token, user_id, self.complex_llm)
                 except Exception as e:
                     logger.error(f"Error setting up calendar service: {str(e)}")
             

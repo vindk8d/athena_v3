@@ -27,6 +27,7 @@ from supabase import create_client, Client
 from google_auth_oauthlib.flow import Flow
 import pickle
 import base64
+import time
 
 from config import Config
 
@@ -35,8 +36,12 @@ logger = logging.getLogger(__name__)
 _llm_instance = None
 
 # Summarization configuration
-SUMMARY_THRESHOLD = 10  # Summarize when history exceeds 10 messages
-MESSAGES_TO_RETAIN = 6  # Always keep the last 6 messages as-is
+SUMMARY_THRESHOLD = 8  # Reduced from 10 - summarize sooner to save costs
+MESSAGES_TO_RETAIN = 4  # Reduced from 6 - keep fewer messages
+
+# Enhanced caching system for better performance
+_context_cache_ttl = {}  # TTL tracking for cache entries
+CACHE_TTL_SECONDS = 300  # 5 minute cache TTL
 
 # ==================== CONSOLIDATED LLM-BASED TIME PARSING FUNCTIONS ====================
 
@@ -127,18 +132,11 @@ Return ONLY a JSON object with this exact format:
 
 @tool
 async def parse_time_reference_tool(time_reference: str, duration_minutes: int = None) -> str:
-    """Parse natural language time reference into ISO datetime strings using LLM.
-    
-    This universal tool handles both specific event scheduling and broader availability periods.
+    """Parse natural language time to ISO datetime.
     
     Args:
-        time_reference: Natural language time like "tomorrow at 2 PM", "next monday", "next week"
-        duration_minutes: Duration in minutes for events (optional). 
-                         If provided: creates specific time slots (e.g., 30min meeting)
-                         If None: creates broader periods (e.g., business hours for availability)
-    
-    Returns:
-        Formatted string with start and end times, or error message
+        time_reference: Time like "tomorrow 2 PM", "next monday"
+        duration_minutes: Duration for events (optional)
     """
     try:
         # Get user timezone from cache (much more efficient)
@@ -166,15 +164,10 @@ async def parse_time_reference_tool(time_reference: str, duration_minutes: int =
 
 @tool
 async def parse_time_period_tool(time_period: str) -> str:
-    """Parse natural language time period into ISO datetime range using LLM.
-    
-    This tool is useful for availability checks and finding time slots.
+    """Parse time period to ISO datetime range.
     
     Args:
-        time_period: Natural language period like "tomorrow", "next week", "monday"
-    
-    Returns:
-        Formatted string with start and end times, or error message
+        time_period: Period like "tomorrow", "next week", "monday"
     """
     try:
         # Get user context for timezone (more efficient to use cache)
@@ -553,43 +546,66 @@ def get_current_thread_id() -> str:
     logger.info(f"🔍 CACHE DEBUG: get_current_thread_id() - returning '{thread_id}'")
     return thread_id
 
+def is_cache_valid(thread_id: str) -> bool:
+    """Check if cache entry is still valid."""
+    if thread_id not in _context_cache_ttl:
+        return False
+    
+    current_time = time.time()
+    cache_time = _context_cache_ttl[thread_id]
+    return (current_time - cache_time) < CACHE_TTL_SECONDS
+
+def refresh_cache_ttl(thread_id: str):
+    """Refresh cache TTL for thread."""
+    _context_cache_ttl[thread_id] = time.time()
+
 def initialize_user_context_cache(user_id: str, contact_id: str) -> None:
-    """Initialize user context cache for the current thread."""
+    """Initialize user context cache for the current thread with TTL."""
     thread_id = f"thread_{user_id}_{contact_id}"
     
-    logger.info(f"🔄 CACHE DEBUG: Initializing context cache for thread {thread_id}")
-    logger.info(f"🔄 CACHE DEBUG: Input - user_id='{user_id}', contact_id='{contact_id}'")
-    
-    # Check if already cached for this thread
-    if thread_id in _user_context_cache:
-        logger.info(f"✅ CACHE DEBUG: Context already cached for thread {thread_id}")
-        cached_data = _user_context_cache[thread_id]
-        logger.info(f"✅ CACHE DEBUG: Cached data keys: {list(cached_data.keys())}")
-        logger.info(f"✅ CACHE DEBUG: Cached user_id='{cached_data.get('user_id')}', contact_id='{cached_data.get('contact_id')}'")
+    # Check if cache is still valid
+    if thread_id in _user_context_cache and is_cache_valid(thread_id):
+        logger.info(f"✅ CACHE: Using valid cached context for {thread_id}")
         return
     
+    logger.info(f"🔄 CACHE: Refreshing context cache for {thread_id}")
+    
     try:
-        logger.info(f"🔍 CACHE DEBUG: Fetching user details for user_id='{user_id}'")
-        # Fetch all context data once
-        user_details = get_user_details(user_id)
-        logger.info(f"✅ CACHE DEBUG: User details fetched successfully: {list(user_details.keys()) if user_details else 'EMPTY'}")
-        if user_details:
-            logger.info(f"✅ CACHE DEBUG: User name='{user_details.get('name')}', nickname='{user_details.get('nickname')}'")
+        # Batch fetch user data efficiently
+        supabase = get_supabase_client()
         
-        user_timezone = user_details.get('default_timezone', 'UTC')
-        logger.info(f"✅ CACHE DEBUG: User timezone='{user_timezone}'")
+        # Single query for user details
+        user_details = {}
+        user_timezone = "UTC"
+        try:
+            user_response = supabase.table('user_details').select('*').eq('user_id', user_id).execute()
+            if user_response.data:
+                user_details = user_response.data[0]
+                user_timezone = user_details.get('default_timezone', 'UTC')
+        except Exception as e:
+            logger.warning(f"Failed to fetch user details: {e}")
         
-        logger.info(f"🔍 CACHE DEBUG: Fetching colleague info for user_id='{user_id}', contact_id='{contact_id}'")
-        colleague_info = get_colleague_info(user_id, contact_id)
-        logger.info(f"✅ CACHE DEBUG: Colleague info fetched successfully: {list(colleague_info.keys()) if colleague_info else 'EMPTY'}")
-        if colleague_info:
-            logger.info(f"✅ CACHE DEBUG: Colleague name='{colleague_info.get('name')}', nickname='{colleague_info.get('nickname')}', email='{colleague_info.get('email')}'")
+        # Single query for colleague info
+        colleague_info = {}
+        if contact_id:
+            try:
+                colleague_response = supabase.table('contacts').select('name, nickname, email').eq('id', contact_id).execute()
+                if colleague_response.data:
+                    colleague_info = colleague_response.data[0]
+                    if not colleague_info.get('nickname'):
+                        colleague_info['nickname'] = colleague_info.get('name', '')
+            except Exception as e:
+                logger.warning(f"Failed to fetch colleague info: {e}")
         
-        logger.info(f"🔍 CACHE DEBUG: Fetching calendar IDs for user_id='{user_id}'")
-        calendar_ids = get_included_calendars(user_id)
-        logger.info(f"✅ CACHE DEBUG: Calendar IDs fetched successfully: {len(calendar_ids)} calendars")
+        # Single query for calendar IDs
+        calendar_ids = []
+        try:
+            cal_response = supabase.table('calendar_list').select('calendar_id').eq('user_id', user_id).eq('calendar_type', 'google').eq('to_read_by_agent', True).execute()
+            calendar_ids = [item['calendar_id'] for item in cal_response.data]
+        except Exception as e:
+            logger.warning(f"Failed to fetch calendar IDs: {e}")
         
-        # Cache everything for this thread
+        # Cache all data
         _user_context_cache[thread_id] = {
             'user_timezone': user_timezone,
             'user_details': user_details,
@@ -600,12 +616,14 @@ def initialize_user_context_cache(user_id: str, contact_id: str) -> None:
             'thread_id': thread_id
         }
         
-        logger.info(f"✅ CACHE DEBUG: Context cached successfully for thread {thread_id}")
-        logger.info(f"✅ CACHE DEBUG: Final cache - timezone={user_timezone}, calendars={len(calendar_ids)}, user_details_keys={list(user_details.keys()) if user_details else 'EMPTY'}, colleague_info_keys={list(colleague_info.keys()) if colleague_info else 'EMPTY'}")
+        # Set cache TTL
+        refresh_cache_ttl(thread_id)
+        
+        logger.info(f"✅ CACHE: Context cached for {thread_id} (TTL: {CACHE_TTL_SECONDS}s)")
         
     except Exception as e:
-        logger.error(f"❌ CACHE DEBUG: Error initializing context cache: {e}")
-        # Set fallback values
+        logger.error(f"❌ CACHE: Error initializing context: {e}")
+        # Set minimal fallback cache
         _user_context_cache[thread_id] = {
             'user_timezone': 'UTC',
             'user_details': {},
@@ -615,20 +633,27 @@ def initialize_user_context_cache(user_id: str, contact_id: str) -> None:
             'contact_id': contact_id,
             'thread_id': thread_id
         }
-        logger.info(f"⚠️ CACHE DEBUG: Set fallback cache values for thread {thread_id}")
+        refresh_cache_ttl(thread_id)
 
+# Optimized context retrieval with cache validation
 def get_cached_context(thread_id: str = None) -> Dict[str, Any]:
-    """Get cached context for the specified or current thread."""
+    """Get cached context with validation."""
     if not thread_id:
         thread_id = get_current_thread_id()
     
-    logger.info(f"🔍 CACHE DEBUG: get_cached_context() - thread_id='{thread_id}'")
-    logger.info(f"🔍 CACHE DEBUG: Available threads in cache: {list(_user_context_cache.keys())}")
+    if thread_id in _user_context_cache and is_cache_valid(thread_id):
+        return _user_context_cache[thread_id]
     
-    context = _user_context_cache.get(thread_id, {})
-    logger.info(f"🔍 CACHE DEBUG: Context found: {bool(context)}, keys: {list(context.keys()) if context else 'EMPTY'}")
+    # Cache expired or missing - try to refresh if we have IDs
+    cached_data = _user_context_cache.get(thread_id, {})
+    user_id = cached_data.get('user_id')
+    contact_id = cached_data.get('contact_id')
     
-    return context
+    if user_id and contact_id:
+        initialize_user_context_cache(user_id, contact_id)
+        return _user_context_cache.get(thread_id, {})
+    
+    return cached_data
 
 def get_user_id_from_cache() -> str:
     """Get user_id from cache."""
@@ -855,15 +880,11 @@ class SimpleState(TypedDict):
 # Tool definitions using @tool decorator with integrated calendar service
 @tool
 async def check_availability_tool(query: str, duration_minutes: int = 30) -> str:
-    """Check calendar availability based on natural language query.
-    
-    This tool intelligently checks availability across all configured calendars.
-    It can handle both specific time checks and time slot inquiries.
+    """Check calendar availability for natural language time query.
     
     Args:
-        query: Natural language description of when you want to check availability
-               Examples: "tomorrow at 2 PM", "next week", "is 3 PM free on Monday?"
-        duration_minutes: Expected meeting duration in minutes (default 30)
+        query: Time query like "tomorrow at 2 PM"
+        duration_minutes: Meeting duration (default 30)
     """
     try:
         # Get user context from state (much more efficient than DB calls)
@@ -940,18 +961,15 @@ async def check_availability_tool(query: str, duration_minutes: int = 30) -> str
 async def create_event_tool(title: str, time_reference: str, duration_minutes: int = 30,
                            attendee_emails: List[str] = None, description: str = "", 
                            location: str = "") -> str:
-    """Create a new calendar event on the user's primary calendar.
-    
-    This tool creates calendar events with full Google Calendar integration.
-    Automatically includes the colleague's email as an attendee when creating meetings.
+    """Create calendar event. Colleague email auto-included.
     
     Args:
-        title: Meeting title (required)
-        time_reference: Natural language time reference (e.g., "tomorrow at 2 PM", "next monday at 10 AM")
-        duration_minutes: Duration in minutes (default: 30)
-        attendee_emails: List of additional attendee email addresses (optional - colleague's email is automatically included)
-        description: Meeting description (optional)
-        location: Meeting location (optional)
+        title: Meeting title
+        time_reference: Time like "tomorrow at 2 PM"
+        duration_minutes: Duration (default 30)
+        attendee_emails: Additional emails (optional)
+        description: Description (optional)
+        location: Location (optional)
     """
     try:
         # Validate inputs
@@ -1128,13 +1146,11 @@ async def create_event_tool(title: str, time_reference: str, duration_minutes: i
 
 @tool
 def get_events_tool(start_datetime: str, end_datetime: str) -> str:
-    """Get calendar events in a specific date range from all configured calendars.
-    
-    This tool retrieves events from all calendars that are configured for the user.
+    """Get calendar events in ISO datetime range.
     
     Args:
-        start_datetime: Start of date range in ISO format with timezone (required)
-        end_datetime: End of date range in ISO format with timezone (required)
+        start_datetime: Start ISO datetime
+        end_datetime: End ISO datetime
     """
     try:
         if not start_datetime or not end_datetime:
@@ -1250,14 +1266,10 @@ def get_events_tool(start_datetime: str, end_datetime: str) -> str:
 
 @tool
 async def get_current_time_tool(timezone: str = None) -> str:
-    """Get current date and time in user's timezone or specified timezone.
-    
-    This tool provides current time information for timezone-aware operations.
-    If no timezone is specified, it will automatically use the user's default timezone
-    from their calendar configuration.
+    """Get current time in timezone.
     
     Args:
-        timezone: Timezone (e.g., 'UTC', 'US/Pacific', 'Europe/London'). If None, uses user's default timezone.
+        timezone: Timezone (uses user default if None)
     """
     try:
         # Try to get user's timezone if not specified
@@ -1274,11 +1286,7 @@ async def get_current_time_tool(timezone: str = None) -> str:
 
 @tool
 def list_calendars_tool() -> str:
-    """List all calendars available to the user.
-    
-    This tool shows all calendars that the user has access to, including their IDs,
-    names, timezones, and access levels.
-    """
+    """List all user calendars with access levels."""
     try:
         try:
             service = get_calendar_service()
@@ -1324,234 +1332,14 @@ def list_calendars_tool() -> str:
         return f"Error listing calendars: {str(e)}"
 
 @tool
-def modify_event_tool(event_id: str, calendar_id: str = None, title: str = None, 
-                     start_datetime: str = None, end_datetime: str = None,
-                     attendee_emails: List[str] = None, description: str = None, 
-                     location: str = None) -> str:
-    """Modify an existing calendar event.
-    Only provide the parameters you want to change - others will remain unchanged.
-    """
-    try:
-        if not event_id:
-            return "❌ Event ID is required for modification"
-        
-        try:
-            user_id = get_current_user_id()
-            calendar_ids = get_calendar_ids_from_cache()
-            user_timezone = get_timezone_from_cache()  # Get user's timezone from cache
-            
-            if not calendar_ids:
-                return "No calendars configured. Please configure calendars in the web interface."
-            
-            service = get_calendar_service()
-            current_event = None
-            target_calendar = None
-            
-            # If calendar_id is provided, try that first
-            if calendar_id:
-                try:
-                    current_event = service.service.events().get(
-                        calendarId=calendar_id, eventId=event_id
-                    ).execute()
-                    target_calendar = calendar_id
-                    logger.info(f"Found event {event_id} in specified calendar {calendar_id}")
-                except HttpError as e:
-                    if e.resp.status == 404:
-                        logger.warning(f"Event {event_id} not found in specified calendar {calendar_id}, will search other calendars")
-                    else:
-                        raise
-            
-            # If not found in specified calendar or no calendar specified, search all calendars
-            if current_event is None:
-                for cal_id in calendar_ids:
-                    try:
-                        current_event = service.service.events().get(
-                            calendarId=cal_id, eventId=event_id
-                        ).execute()
-                        target_calendar = cal_id
-                        logger.info(f"Found event {event_id} in calendar {cal_id}")
-                        break
-                    except HttpError as e:
-                        if e.resp.status == 404:
-                            continue  # Try next calendar
-                        else:
-                            raise
-            
-            if current_event is None:
-                return f"❌ Event with ID '{event_id}' not found in any of your configured calendars"
-            
-            update_body = {}
-            if title is not None:
-                update_body['summary'] = title
-            if start_datetime is not None:
-                update_body['start'] = {
-                    'dateTime': start_datetime,
-                    # Use user's timezone as fallback instead of UTC
-                    'timeZone': current_event.get('start', {}).get('timeZone', user_timezone)
-                }
-            if end_datetime is not None:
-                update_body['end'] = {
-                    'dateTime': end_datetime,
-                    # Use user's timezone as fallback instead of UTC
-                    'timeZone': current_event.get('end', {}).get('timeZone', user_timezone)
-                }
-            if description is not None:
-                update_body['description'] = description
-            if location is not None:
-                update_body['location'] = location
-            if attendee_emails is not None:
-                # Filter out empty/invalid attendee emails
-                valid_emails = [email.strip() for email in attendee_emails if email and email.strip()]
-                update_body['attendees'] = [{'email': email} for email in valid_emails]
-            
-            if not update_body:
-                return f"Current event details:\nTitle: {current_event.get('summary', 'No title')}\nStart: {current_event.get('start', {}).get('dateTime', 'No start time')}\nEnd: {current_event.get('end', {}).get('dateTime', 'No end time')}\nCalendar: {target_calendar}"
-            
-            updated_event = service.service.events().update(
-                calendarId=target_calendar,
-                eventId=event_id,
-                body=update_body
-            ).execute()
-            
-            result = f"✅ Event updated successfully!\n"
-            result += f"Event ID: {updated_event['id']}\n"
-            result += f"Title: {updated_event.get('summary', 'No title')}\n"
-            result += f"Start: {updated_event.get('start', {}).get('dateTime', 'No start time')}\n"
-            result += f"End: {updated_event.get('end', {}).get('dateTime', 'No end time')}\n"
-            result += f"Calendar: {target_calendar}\n"
-            if updated_event.get('attendees'):
-                attendees = [att.get('email') for att in updated_event['attendees']]
-                result += f"Attendees: {', '.join(attendees)}\n"
-            if updated_event.get('location'):
-                result += f"Location: {updated_event['location']}\n"
-            if updated_event.get('htmlLink'):
-                result += f"Calendar link: {updated_event['htmlLink']}\n"
-            
-            return result
-            
-        except ValueError as e:
-            if "User ID not set" in str(e) or "Calendar service not initialized" in str(e):
-                # Demo mode for LangGraph Studio
-                logger.info("Running in demo mode - no user context available")
-                
-                result = f"✅ Demo mode: Event would be updated successfully!\n"
-                result += f"Event ID: {event_id}\n"
-                if title:
-                    result += f"Title: {title}\n"
-                if start_datetime:
-                    result += f"Start: {start_datetime}\n"
-                if end_datetime:
-                    result += f"End: {end_datetime}\n"
-                if attendee_emails:
-                    result += f"Attendees: {', '.join(attendee_emails)}\n"
-                if location:
-                    result += f"Location: {location}\n"
-                if description:
-                    result += f"Description: {description}\n"
-                result += f"\nNote: This is a demo response. In production, this would modify the event in your actual Google Calendar."
-                
-                return result
-            else:
-                raise
-                
-    except Exception as e:
-        logger.error(f"Error in modify_event_tool: {e}")
-        return f"I had trouble modifying the event. Please check the event ID and try again."
-
-@tool
-def delete_event_tool(event_id: str, calendar_id: str = None) -> str:
-    """Delete a calendar event.
-    This tool permanently removes an event from the calendar.
-    """
-    try:
-        if not event_id:
-            return "❌ Event ID is required for deletion"
-        
-        try:
-            user_id = get_current_user_id()
-            calendar_ids = get_calendar_ids_from_cache()
-            if not calendar_ids:
-                return "No calendars configured. Please configure calendars in the web interface."
-            
-            service = get_calendar_service()
-            current_event = None
-            target_calendar = None
-            
-            # If calendar_id is provided, try that first
-            if calendar_id:
-                try:
-                    current_event = service.service.events().get(
-                        calendarId=calendar_id, eventId=event_id
-                    ).execute()
-                    target_calendar = calendar_id
-                    logger.info(f"Found event {event_id} in specified calendar {calendar_id}")
-                except HttpError as e:
-                    if e.resp.status == 404:
-                        logger.warning(f"Event {event_id} not found in specified calendar {calendar_id}, will search other calendars")
-                    else:
-                        raise
-            
-            # If not found in specified calendar or no calendar specified, search all calendars
-            if current_event is None:
-                for cal_id in calendar_ids:
-                    try:
-                        current_event = service.service.events().get(
-                            calendarId=cal_id, eventId=event_id
-                        ).execute()
-                        target_calendar = cal_id
-                        logger.info(f"Found event {event_id} in calendar {cal_id}")
-                        break
-                    except HttpError as e:
-                        if e.resp.status == 404:
-                            continue  # Try next calendar
-                        else:
-                            raise
-            
-            if current_event is None:
-                return f"❌ Event with ID '{event_id}' not found in any of your configured calendars"
-            
-            service.service.events().delete(
-                calendarId=target_calendar,
-                eventId=event_id
-            ).execute()
-            
-            result = f"✅ Event deleted successfully!\n"
-            result += f"Deleted event: {current_event.get('summary', 'No title')}\n"
-            result += f"Event ID: {event_id}\n"
-            result += f"Calendar: {target_calendar}\n"
-            
-            return result
-            
-        except ValueError as e:
-            if "User ID not set" in str(e) or "Calendar service not initialized" in str(e):
-                # Demo mode for LangGraph Studio
-                logger.info("Running in demo mode - no user context available")
-                
-                result = f"✅ Demo mode: Event would be deleted successfully!\n"
-                result += f"Deleted event: Demo Meeting\n"
-                result += f"Event ID: {event_id}\n"
-                result += f"\nNote: This is a demo response. In production, this would delete the event from your actual Google Calendar."
-                
-                return result
-            else:
-                raise
-                
-    except Exception as e:
-        logger.error(f"Error in delete_event_tool: {e}")
-        return f"I had trouble deleting the event. Please check the event ID and try again."
-
-@tool
 async def find_available_slots_tool(start_datetime: str, end_datetime: str, duration_minutes: int = 30, busy_times: List[Dict] = None) -> str:
-    """Find available time slots within a time range, avoiding busy periods.
-    
-    This tool helps find multiple available time slots when you have a list of busy times.
-    Useful for finding free slots within a larger time period.
+    """Find available slots in datetime range.
     
     Args:
-        start_datetime: Start of time range in ISO format with timezone (required)
-        end_datetime: End of time range in ISO format with timezone (required) 
-        duration_minutes: Duration of each slot in minutes (default: 30)
-        busy_times: List of busy time periods in format [{"start": "ISO_DATETIME", "end": "ISO_DATETIME"}] (optional)
+        start_datetime: Start ISO datetime
+        end_datetime: End ISO datetime
+        duration_minutes: Slot duration (default 30)
+        busy_times: Busy periods (auto-retrieved if None)
     """
     try:
         # Parse datetime strings to datetime objects
@@ -1607,14 +1395,11 @@ async def find_available_slots_tool(start_datetime: str, end_datetime: str, dura
 
 @tool
 async def get_available_slots_for_period_tool(time_period: str, duration_minutes: int = 30) -> str:
-    """Get available time slots for a specific time period by checking Google Calendar.
-    
-    This tool automatically retrieves busy times from Google Calendar and finds available slots.
-    It's a complete data retrieval function that handles the entire process.
+    """Get available slots for time period by checking calendar.
     
     Args:
-        time_period: Natural language time period (e.g., "tomorrow", "next week", "monday")
-        duration_minutes: Duration of each slot in minutes (default: 30)
+        time_period: Period like "tomorrow", "next week"
+        duration_minutes: Slot duration (default 30)
     """
     try:
         # Get user context from state (much more efficient than DB calls)
@@ -1704,174 +1489,17 @@ async def get_available_slots_for_period_tool(time_period: str, duration_minutes
         logger.error(f"Error in get_available_slots_for_period_tool: {e}")
         return f"I had trouble finding available slots for {time_period}. Please try again or provide a more specific time period."
 
-@tool
-async def find_event_tool(search_criteria: str, time_reference: str = None) -> str:
-    """Find calendar events by title, description, attendees, or other criteria.
-    
-    This enhanced tool searches through calendar events and returns structured data
-    that can be used with modify_event_tool or delete_event_tool.
-    
-    Args:
-        search_criteria: What to search for (meeting title, attendee name, location, description, etc.)
-        time_reference: Optional time context to narrow search (e.g., "tomorrow", "next week", "today")
-                       If not provided, searches from past 7 days to next 30 days
-    """
-    try:
-        if not search_criteria or not search_criteria.strip():
-            return "❌ Search criteria is required"
-        
-        try:
-            user_id = get_current_user_id()
-            calendar_ids = get_calendar_ids_from_cache()
-            user_timezone = get_timezone_from_cache()
-            
-            if not calendar_ids:
-                return "No calendars configured for searching events. Please configure calendars in the web interface."
-            
-            service = get_calendar_service()
-            
-            # Determine search time range
-            if time_reference:
-                # Parse time reference to get search range
-                llm = get_llm_instance()
-                if llm:
-                    start_datetime_str, end_datetime_str = await parse_time_with_llm(time_reference, user_timezone, llm)
-                    if start_datetime_str and end_datetime_str:
-                        start_datetime = start_datetime_str
-                        end_datetime = end_datetime_str
-                    else:
-                        # Fallback to default range
-                        from datetime import timedelta
-                        current_time = datetime.now(pytz.timezone(user_timezone))
-                        start_datetime = (current_time - timedelta(days=7)).isoformat()
-                        end_datetime = (current_time + timedelta(days=30)).isoformat()
-                else:
-                    # Fallback to default range
-                    from datetime import timedelta
-                    current_time = datetime.now(pytz.timezone(user_timezone))
-                    start_datetime = (current_time - timedelta(days=7)).isoformat()
-                    end_datetime = (current_time + timedelta(days=30)).isoformat()
-            else:
-                # Default search range (past 7 days to next 30 days)
-                from datetime import timedelta
-                current_time = datetime.now(pytz.timezone(user_timezone))
-                start_datetime = (current_time - timedelta(days=7)).isoformat()
-                end_datetime = (current_time + timedelta(days=30)).isoformat()
-            
-            # Get events from all included calendars
-            all_events = []
-            for calendar_id in calendar_ids:
-                try:
-                    start_date = start_datetime.split('T')[0]
-                    end_date = end_datetime.split('T')[0]
-                    events = service.get_events(calendar_id, start_date, end_date, user_timezone)
-                    for event in events:
-                        event['calendar_id'] = calendar_id
-                    all_events.extend(events)
-                except Exception as e:
-                    logger.warning(f"Error getting events from calendar {calendar_id}: {e}")
-            
-            if not all_events:
-                time_desc = f" for time period '{time_reference}'" if time_reference else ""
-                return f"No events found matching '{search_criteria}'{time_desc}"
-            
-            # Enhanced search across multiple fields with partial matching
-            search_terms = search_criteria.lower().split()
-            matching_events = []
-            
-            for event in all_events:
-                match_score = 0
-                
-                # Check if ANY search term matches ANY field
-                for term in search_terms:
-                    # Search in title/summary (highest priority)
-                    if term in event.get('summary', '').lower():
-                        match_score += 3
-                    
-                    # Search in description
-                    if term in event.get('description', '').lower():
-                        match_score += 2
-                    
-                    # Search in location
-                    if term in event.get('location', '').lower():
-                        match_score += 2
-                    
-                    # Search in attendee emails/names
-                    attendee_text = ' '.join(event.get('attendees', [])).lower()
-                    if term in attendee_text:
-                        match_score += 2
-                
-                # If any terms matched, include the event
-                if match_score > 0:
-                    event['match_score'] = match_score
-                    matching_events.append(event)
-            
-            if not matching_events:
-                time_desc = f" for time period '{time_reference}'" if time_reference else ""
-                return f"No events found matching '{search_criteria}'{time_desc}"
-            
-            # Sort by match score (descending) then by start time
-            matching_events.sort(key=lambda x: (-x['match_score'], x['start']))
-            
-            # Return structured data that can be used by modify/delete tools
-            result = f"FOUND {len(matching_events)} EVENT(S) MATCHING '{search_criteria}':\n\n"
-            
-            for i, event in enumerate(matching_events, 1):
-                result += f"[{i}] {event['summary']}\n"
-                result += f"    Time: {event['start']} - {event['end']}\n"
-                result += f"    Event ID: {event['id']}\n"
-                result += f"    Calendar ID: {event['calendar_id']}\n"
-                if event.get('description'):
-                    desc = event['description'][:100] + "..." if len(event['description']) > 100 else event['description']
-                    result += f"    Description: {desc}\n"
-                if event.get('location'):
-                    result += f"    Location: {event['location']}\n"
-                if event.get('attendees'):
-                    result += f"    Attendees: {', '.join(event['attendees'])}\n"
-                result += "\n"
-            
-            # Add guidance for next steps
-            if len(matching_events) == 1:
-                event = matching_events[0]
-                result += f"📋 TO MODIFY THIS EVENT:\n"
-                result += f"Use modify_event_tool with event_id='{event['id']}' and calendar_id='{event['calendar_id']}'\n\n"
-                result += f"📋 TO DELETE THIS EVENT:\n"
-                result += f"Use delete_event_tool with event_id='{event['id']}' and calendar_id='{event['calendar_id']}'\n"
-            else:
-                result += f"📋 TO MODIFY/DELETE A SPECIFIC EVENT:\n"
-                result += f"Use the Event ID and Calendar ID from the event you want to change.\n"
-                result += f"For example, for event [1]: modify_event_tool with event_id='{matching_events[0]['id']}' and calendar_id='{matching_events[0]['calendar_id']}'\n"
-            
-            return result
-            
-        except ValueError as e:
-            if "User ID not set" in str(e) or "Calendar service not initialized" in str(e):
-                # Demo mode for LangGraph Studio
-                logger.info("Running in demo mode - no user context available")
-                
-                result = f"Demo mode: Found events matching '{search_criteria}':\n\n"
-                result += f"- Team Standup (2024-01-15T09:00:00Z - 2024-01-15T09:30:00Z)\n"
-                result += f"  Event ID: demo_event_123\n"
-                result += f"  Calendar: primary@example.com\n"
-                result += f"  Location: Conference Room A\n\n"
-                result += f"Note: This is a demo response. In production, this would search your actual Google Calendar events."
-                
-                return result
-            else:
-                raise
-        
-    except Exception as e:
-        logger.error(f"Error in find_event_tool: {e}")
-        return f"I had trouble searching for events. Please try again."
-
 # Bundle tools - including new LLM-based time parsing tools
+# NOTE: modify_event_tool, delete_event_tool, and find_event_tool are commented out
+# because Athena should not allow colleagues to modify or delete the user's calendar events
 tools = [
     # Time parsing tools (LLM-based)
     parse_time_reference_tool, 
     # Calendar operation tools
     check_availability_tool, create_event_tool, get_events_tool, get_current_time_tool, 
-    list_calendars_tool, modify_event_tool, delete_event_tool, find_available_slots_tool, 
-    get_available_slots_for_period_tool, find_event_tool
+    list_calendars_tool, find_available_slots_tool, 
+    get_available_slots_for_period_tool
+    # Removed: modify_event_tool, delete_event_tool, find_event_tool (security reasons)
 ]
 
 class SimpleSupabaseCheckpointer:
@@ -2530,327 +2158,151 @@ async def archive_conversation_to_messages_table(contact_id: str, user_id: str, 
         logger.error(f"Error archiving messages: {e}")
 
 class SimpleAthenaAgent:
-    """Simplified Athena agent with cleaner architecture."""
+    """Simplified Athena agent with cleaner architecture and model tiering."""
     
-    def __init__(self, openai_api_key: str, model_name: str = "gpt-3.5-turbo", temperature: float = 0.3):
-        """Initialize the simplified agent."""
-        self.llm = ChatOpenAI(
-            temperature=temperature,
-            model_name=model_name,
+    def __init__(self, openai_api_key: str, 
+                 simple_model: str = "gpt-3.5-turbo", 
+                 complex_model: str = "gpt-4o", 
+                 temperature: float = 0.3):
+        """Initialize the simplified agent with model tiering.
+        
+        Args:
+            openai_api_key: OpenAI API key
+            simple_model: Model for simple tasks (intent, summarization) 
+            complex_model: Model for complex execution tasks
+            temperature: Temperature for model inference
+        """
+        # Initialize different models for different complexity tasks
+        self.simple_llm = ChatOpenAI(
+            temperature=0.1,  # Lower temperature for classification tasks
+            model_name=simple_model,
             openai_api_key=openai_api_key
         )
         
-        # Set LLM instance for tools
-        set_llm_instance(self.llm)
+        self.complex_llm = ChatOpenAI(
+            temperature=temperature,
+            model_name=complex_model,
+            openai_api_key=openai_api_key
+        )
         
-        # Create agents
+        # Set the complex LLM for tools that need advanced reasoning (time parsing, etc.)
+        set_llm_instance(self.complex_llm)
+        
+        # Track model usage for cost monitoring
+        self.model_usage = {
+            "simple_model_calls": 0,
+            "complex_model_calls": 0,
+            "simple_model": simple_model,
+            "complex_model": complex_model
+        }
+        
+        # Create agents with appropriate models
         self.intent_classifier = self._create_intent_classifier()
         self.execution_decider = self._create_execution_decider()
         
         # Create the graph
         self.graph = self._create_graph()
         
-        logger.info("Simple Athena agent initialized successfully")
+        logger.info(f"Simple Athena agent initialized with model tiering:")
+        logger.info(f"  - Simple tasks (intent/summary): {simple_model}")
+        logger.info(f"  - Complex tasks (execution): {complex_model}")
+    
+    async def _call_simple_llm(self, messages):
+        """Call simple LLM with usage tracking."""
+        self.model_usage["simple_model_calls"] += 1
+        logger.debug(f"💰 Using {self.model_usage['simple_model']} (call #{self.model_usage['simple_model_calls']})")
+        return await self.simple_llm.ainvoke(messages)
+    
+    async def _call_complex_llm(self, messages):
+        """Call complex LLM with usage tracking."""
+        self.model_usage["complex_model_calls"] += 1
+        logger.debug(f"🧠 Using {self.model_usage['complex_model']} (call #{self.model_usage['complex_model_calls']})")
+        return await self.complex_llm.ainvoke(messages)
+    
+    def get_model_usage_stats(self) -> Dict[str, Any]:
+        """Get model usage statistics for cost monitoring."""
+        return {
+            **self.model_usage,
+            "total_calls": self.model_usage["simple_model_calls"] + self.model_usage["complex_model_calls"],
+            "cost_ratio": f"{self.model_usage['simple_model_calls']}:{self.model_usage['complex_model_calls']}"
+        }
     
     def _create_intent_classifier(self):
-        """Create intent classifier agent."""
+        """Create intent classifier agent using simple model."""
         intent_prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are an intent classifier for Athena, a professional executive assistant AI.
+            ("system", """You are an intent classifier for Athena, an executive assistant AI.
 
-ATHENA'S ROLE:
-Athena serves as the Executive Assistant to the user (identified in user_details.name field). Her primary responsibility is to coordinate with colleagues on behalf of the user to find suitable meeting times and book appointments through Google Calendar APIs. Athena acts as the user's professional representative in all scheduling matters.
+Analyze colleague messages in context of conversation summary + recent messages. Return ONLY the intent name.
 
-CONTEXT FOR YOUR TASK:
-You will be given a summary of the early part of the conversation (if available), followed by the most recent messages.
-Base your classification on the COMBINATION of the summary and the recent messages. The most recent messages are the most important for determining the user's immediate intent.
+INTENTS:
+• general_conversation: Greetings, casual chat, off-topic
+• clarification_answer: Responding to assistant questions, confirmations ("yes", "ok", "go ahead"), providing requested details
+• meeting_request: Want to schedule/create new meetings ("schedule", "meet", "book")
+• calendar_inquiry: Want to view existing events ("what's on calendar", "show meetings")
+• availability_inquiry: Check free time ("when free", "availability", "open slots")
+• meeting_modification: Change/cancel existing meetings (politely decline - security)
+• time_question: Ask about time/timezone info
 
-Your task is to carefully analyze colleague messages and classify them into one of these intents:
+KEY RULES:
+1. If responding to assistant question/confirmation request → clarification_answer
+2. If providing meeting details after assistant asked → clarification_answer  
+3. Simple confirmations ("ok", "yes", "sure") after assistant questions → clarification_answer
 
-1. general_conversation - Greetings, casual chat, off-topic discussions
-
-2. clarification_answer - User is providing additional details, confirming information, or answering a clarifying question that the assistant asked
-   • Look for messages that are clearly responding to a previous question from the assistant
-   • Common patterns: providing missing details, specifying times/dates, confirming information, giving permission to proceed
-   • Examples: 
-     - Providing details: "Tomorrow at 3 PM", "The client presentation", "Pacific timezone", "Meeting is catching up, about an hour, just me"
-     - Confirmations: "Yes", "No", "Sure", "OK", "ok go ahead", "That works", "Yes please", "Go ahead", "Proceed"
-     - Giving permission: "ok go ahead", "yes go ahead", "sure go ahead", "that's fine", "sounds good"
-   • Key indicator: The message makes most sense as an answer to a previous assistant question or request for confirmation
-   • IMPORTANT: If the user is providing meeting details (title, duration, attendees) in response to a previous question, this is ALWAYS clarification_answer
-   • CRITICAL: If the assistant just asked "Shall I create this meeting for you?" and the user responds with any form of yes/no/confirmation, this is clarification_answer
-
-3. meeting_request - User wants to schedule, book, or create a new meeting or appointment
-   • Initial requests to schedule something new
-   • Examples: "Schedule a meeting", "Can we meet tomorrow?", "Book time with John"
-
-4. calendar_inquiry - User wants to see, review, or check existing calendar events
-   • Examples: "What's on my calendar?", "Show me tomorrow's schedule"
-
-5. availability_inquiry - User wants to check free time, availability, or open slots
-   • Examples: "When am I free?", "What slots are available?", "Check my availability"
-
-6. meeting_modification - User wants to change, cancel, reschedule, or modify existing meetings
-   • Examples: "Cancel my 2 PM meeting", "Move the call to Thursday"
-
-7. time_question - User asks about current time, timezone information, or date/time clarification
-   • Examples: "What time is it?", "What timezone are you using?"
-
-CRITICAL RULES:
-1. If the user's message appears to be answering a question or providing requested details (even without explicit question markers), classify as "clarification_answer"
-2. If the user is providing meeting details (title, duration, attendees) in response to a previous assistant question, this is ALWAYS "clarification_answer"
-3. If the assistant just asked for confirmation (e.g., "Shall I create this meeting?") and the user responds with any form of yes/no/confirmation, this is clarification_answer
-4. Look at the conversation context - if the assistant just asked for meeting details or confirmation and the user is providing them, that's clarification_answer
-5. Simple confirmations like "ok", "yes", "sure", "go ahead" are almost always clarification_answer when they follow an assistant question
-
-CONTEXT ANALYSIS:
-- Review the last 2-3 messages to understand the conversation flow
-- If the assistant asked a question or requested confirmation, and the user is responding to that, it's clarification_answer
-- If the assistant said "Shall I create this meeting?" and user says "ok go ahead", that's clarification_answer
-- If the assistant asked for meeting details and user provides them, that's clarification_answer
-
-SPECIFIC EXAMPLES:
-Assistant: "Shall I create this meeting for you?"
-User: "ok go ahead"
-→ clarification_answer
-
-Assistant: "Should I proceed with booking this time slot?"
-User: "Yes"
-→ clarification_answer
-
-Assistant: "What's the meeting title?"
-User: "Catching up"
-→ clarification_answer
-
-Assistant: "How long should the meeting be?"
-User: "About an hour"
-→ clarification_answer
-
-Assistant: "Hello! How can I help you today?"
-User: "Hi there"
-→ general_conversation
-
-User: "Schedule a meeting for tomorrow"
-→ meeting_request
-
-Always classify based on the user's primary intent, even if the message contains multiple elements.
-Respond with ONLY the intent name (e.g., "meeting_request").
-            """),
+Examples:
+Assistant asks "Shall I create this meeting?" → User: "ok go ahead" → clarification_answer
+User: "Schedule a meeting tomorrow" → meeting_request
+User: "What's on my calendar?" → calendar_inquiry"""),
             MessagesPlaceholder(variable_name="messages"),
             MessagesPlaceholder(variable_name="agent_scratchpad"),
         ])
         
-        return create_tool_calling_agent(self.llm, [], intent_prompt)
+        # Use simple model for intent classification
+        return create_tool_calling_agent(self.simple_llm, [], intent_prompt)
     
     def _create_execution_decider(self):
-        """Create execution decider agent with all tools."""
+        """Create execution decider agent using complex model."""
         execution_prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are Athena, a professional and intelligent executive assistant AI.
+            ("system", """You are Athena, executive assistant AI coordinating calendar for your user.
 
-ATHENA'S ROLE & IDENTITY:
-You are the Executive Assistant to the user (identified in user_details.name field). Use user_details.nickname when addressing or referring to your user in conversations with colleagues. Your primary responsibility is to coordinate with colleagues on behalf of your user to find suitable meeting times and book appointments through Google Calendar APIs.
+CORE ROLE: Schedule meetings between colleagues and your user via Google Calendar API.
 
-COLLEAGUE INTERACTION:
-- Address colleagues using their contacts.nickname field (if available and not empty), otherwise use their name
-- Be warm, friendly, and professional in all interactions
-- When first meeting a colleague (no conversation history), introduce yourself: "Hi [colleague nickname/name]! I'm Athena, [user nickname/name]'s executive assistant."
-- Always represent your user professionally and courteously
+CONTEXT ACCESS: Use cached user/colleague details for personalized responses.
 
-AVAILABILITY & BOOKING PROTOCOL:
-- ALWAYS check your user's calendar availability before confirming any meeting times
-- If the user's calendar is not available during requested slots, decline gracefully: "I'm sorry, but [user nickname/name] isn't available during that time. Let me suggest some alternative slots when [he/she] is free."
-- Only book meetings when you've confirmed the time slot is actually free on the user's calendar
-- Be proactive in suggesting alternative times when the requested time isn't available
+WORKFLOW:
+1. Check user calendar availability BEFORE confirming times
+2. Gather: title, time, duration, attendees  
+3. Create meeting if available, suggest alternatives if not
+4. Colleague email auto-included in invites
 
-DEMO MODE NOTE: When running in LangGraph Studio or other demo environments, calendar tools will provide demo responses instead of connecting to actual Google Calendar. This is normal and expected for testing purposes.
+COMMUNICATION:
+- Address colleagues by nickname when available
+- Professional, warm, concise responses
+- First interaction: "Hi [name]! I'm Athena, [user]'s assistant."
 
-TIME PARSING CAPABILITIES:
-You are capable of understanding and converting time references directly. When you see time references:
-1. ALWAYS convert them to ISO format (YYYY-MM-DDTHH:MM:SS+HH:MM)
-2. Use the user's timezone (provided in the conversation) or UTC if not specified
-3. Handle relative references like:
-   - "tomorrow at 10 AM" → Calculate exact date and time
-   - "next monday" → Find the date of next Monday
-   - "in 2 hours" → Add hours to current time
-   - "afternoon" → Use 2 PM as default time
-   - "morning" → Use 9 AM as default time
-4. For duration references:
-   - "about an hour" = 60 minutes
-   - "half hour" = 30 minutes
-   - "an hour and a half" = 90 minutes
-5. For date-only references, use business hours (8 AM - 6 PM)
-6. For time-only references, use today's date
-7. ALWAYS validate that dates are not in the past
+INTENT HANDLING:
+• clarification_answer: Continue previous conversation, process confirmations immediately
+• meeting_request: Check availability → confirm details → book
+• availability_inquiry: Use get_available_slots_for_period_tool
+• calendar_inquiry: Use get_events_tool for date ranges
+• meeting_modification: Politely decline - security reasons
+• general_conversation: Friendly response + offer calendar help
 
-Example time parsing:
-- "tomorrow at 10 AM" → "2024-01-16T10:00:00+00:00"
-- "next monday afternoon" → "2024-01-22T14:00:00+00:00"
-- "in 2 hours" → (current time + 2 hours in ISO format)
+TIME PARSING: Convert natural language ("tomorrow 2 PM") to ISO format using tools.
 
-Your role is to help users manage their calendar and schedule meetings efficiently. You have access to these calendar tools:
+SECURITY: Cannot modify/delete existing events. Only create new meetings.
 
-## Core Calendar Tools:
-- parse_time_reference_tool: Parse any natural language time reference (events with duration OR availability periods)
-- check_availability_tool: Check availability for a specific time (provide ISO format)
-- create_event_tool: Create calendar events (requires ISO format times)
-- get_events_tool: Retrieve existing calendar events with their IDs and calendar information
-- get_current_time_tool: Get current time and timezone information
-- list_calendars_tool: List all calendars available to the user
-- find_available_slots_tool: Find multiple available time slots
-- get_available_slots_for_period_tool: Get available slots by checking calendar
-
-## 🔍 EVENT SEARCH AND MANAGEMENT (Two-Step Process):
-- **find_event_tool**: Enhanced search tool that finds events by title, description, attendees, location, or time references. Returns structured data with Event IDs and Calendar IDs needed for modifications.
-- **modify_event_tool**: Modify existing calendar events (requires event_id and calendar_id from find_event_tool)
-- **delete_event_tool**: Delete calendar events permanently (requires event_id and calendar_id from find_event_tool)
-
-## 🎯 INTELLIGENT EVENT MODIFICATION WORKFLOW:
-When a colleague wants to modify or delete a meeting:
-
-**Step 1: Find the Event**
-Use find_event_tool with:
-- search_criteria: Natural language description ("standup", "client meeting", "meeting with john")
-- time_reference: Optional time context ("tomorrow", "next week", "today")
-
-**Step 2: Take Action**
-Use the Event ID and Calendar ID from the search results with:
-- modify_event_tool: To change title, time, location, attendees, etc.
-- delete_event_tool: To cancel/delete the meeting
-
-## ENHANCED SEARCH CAPABILITIES:
-The find_event_tool can locate events using:
-- **Meeting titles**: "standup", "client meeting", "project review", "one-on-one"
-- **Attendee names**: "john", "sarah", "team meeting"  
-- **Time references**: "tomorrow", "today", "next week", "monday"
-- **Locations**: "conference room", "zoom", "office"
-- **Descriptions**: Any text in the meeting description
-- **Combined searches**: "meeting with john tomorrow", "client call today"
-
-## SMART SEARCH FEATURES:
-- Partial word matching across multiple fields
-- Relevance scoring (title matches rank higher)
-- Time-aware searching with natural language
-- Multiple event handling with clear selection guidance
-
-## Data Retrieval Tools for Availability:
-- **get_available_slots_for_period_tool**: The most powerful tool for availability checking. It automatically:
-  - Retrieves busy times from Google Calendar
-  - Finds available slots in the specified time period
-  - Returns formatted available time slots
-  - Use this for queries like "What slots are available tomorrow?"
-
-- **find_available_slots_tool**: Enhanced version that can auto-retrieve from Google Calendar
-  - Can work with pre-provided busy times OR retrieve from Google Calendar automatically
-  - Useful for finding slots within specific datetime ranges
-
-## Colleague Coordination Process:
-1. **Identify the Request**: When a colleague wants to meet with your user
-2. **Check Availability**: Use calendar tools to check your user's availability
-3. **Propose Times**: Suggest available time slots to the colleague
-4. **Confirm Details**: Gather meeting title, duration, and any other details
-5. **Create Meeting**: Use calendar tools to create the meeting in Google Calendar
-6. **Confirm Booking**: Provide confirmation to the colleague
-
-## AUTOMATIC ATTENDEE INCLUSION:
-🎯 **IMPORTANT**: When creating meetings with create_event_tool, the colleague's email is AUTOMATICALLY included as an attendee. You don't need to specify their email in the attendee_emails parameter - it's handled automatically from the cached colleague information. This ensures the colleague always receives calendar invites.
-
-## Calendar Tool Usage Requirements:
-- **Always use calendar tools** for any calendar-related operations
-- **Never skip tool usage** when calendar operations are needed
-- **Use Google Calendar API** through the provided tools for all calendar actions
-- **Validate all inputs** before using tools to ensure proper formatting
-
-COMMUNICATION STYLE:
-1. **Natural & Concise**: Speak naturally and conversationally, avoiding repetitive or monotonous language
-2. **Personable**: Use the colleague's nickname when available, be warm and approachable
-3. **Professional**: Maintain professionalism while being friendly and helpful
-4. **Graceful Error Handling**: When errors occur, handle them naturally without technical jargon: "Let me check on that for you" rather than "API error occurred"
-5. **Proactive**: Anticipate needs and offer helpful alternatives, especially when suggesting meeting times
-
-HANDLING CLARIFICATION ANSWERS:
-When users provide additional information (clarification_answer intent), treat it as continuing the previous conversation:
-- Review the conversation history to understand what information was requested
-- Combine the new details with previous context to complete the task
-- If you now have enough information, proceed with the appropriate action (create meeting, check availability, etc.)
-- If still missing critical details, ask for the remaining information naturally
-- Always acknowledge the information they provided: "Great! So that's [summary of info]..."
-
-HANDLING CONFIRMATIONS:
-When colleagues give confirmations (like "ok go ahead", "yes", "sure"):
-- If you just asked "Shall I create this meeting?" and they confirm, IMMEDIATELY proceed with creating the meeting
-- If you asked for confirmation about any action and they confirm, proceed with that action
-- Don't ask for redundant details if you have sufficient information from conversation history
-- Use natural acknowledgments: "Perfect! Let me get that scheduled for you and [user], [colleague_nickname]."
-
-EXAMPLES of natural colleague interaction:
-Colleague: "Can John meet tomorrow at 2 PM?"
-Athena: "Hi Sarah! Let me check John's calendar for tomorrow at 2 PM." [Then check availability]
-
-If available: "Perfect! John is free at 2 PM tomorrow. Shall I go ahead and schedule that for you both?"
-If not available: "I'm sorry, John already has something scheduled at 2 PM tomorrow. How about 3 PM or 4 PM instead? He's free then."
-
-Colleague: "ok go ahead" (after you asked for confirmation)
-Athena: "Excellent! I've got that meeting scheduled for John. You'll both receive calendar invites shortly."
-
-INTELLIGENT TIME PROCESSING:
-- ALWAYS extract temporal information from conversation history (yesterday, today, tomorrow, specific dates/times)
-- When you see "tomorrow at 10 AM", calculate the actual date and convert to ISO format
-- "About an hour" = 60 minutes duration
-- "Just me" = no attendees needed
-
-MEETING COORDINATION WORKFLOW:
-1. **Check Availability First**: Always verify your user's calendar before confirming any meeting times
-2. **Gather Essential Details**: Meeting title/purpose, date and time, duration, attendees
-3. **Confirm Before Booking**: "Shall I go ahead and schedule that?" only after verifying availability
-4. **Book and Confirm**: Create the meeting and provide confirmation with natural language
-
-ESSENTIAL: Never book meetings without first confirming the user's calendar is free at that time. If the requested time isn't available, always suggest alternatives.
-
-EXAMPLES of colleague coordination:
-Colleague: "Can [user] meet tomorrow at 10 AM for catching up, about an hour?"
-Athena: 
-1. "Let me check [user]'s calendar for tomorrow at 10 AM..."
-2. Use check_availability_tool for that time slot
-3. If available: "Perfect! [User] is free then. Shall I schedule that hour-long catch-up meeting?"
-4. If not available: "I'm sorry, [user] has a conflict at 10 AM tomorrow. How about 11 AM or 2 PM? Both slots are open."
-
-Colleague confirms: "11 AM works great!"
-Athena: "Excellent! I'll get that meeting scheduled for [user] and you at 11 AM tomorrow. You'll both receive calendar invites shortly!"
-
-Always double-check that dates and times make sense before proceeding.
-
-## EXAMPLES OF TWO-STEP WORKFLOW:
-
-**Canceling Meetings:**
-Colleague: "Cancel our meeting tomorrow"
-1. find_event_tool(search_criteria="meeting", time_reference="tomorrow")
-2. delete_event_tool(event_id="[from_search]", calendar_id="[from_search]")
-
-Colleague: "Delete the client call"
-1. find_event_tool(search_criteria="client call")
-2. delete_event_tool(event_id="[from_search]", calendar_id="[from_search]")
-
-**Rescheduling Meetings:**
-Colleague: "Move our standup to 3 PM tomorrow"
-1. find_event_tool(search_criteria="standup")
-2. modify_event_tool(event_id="[from_search]", calendar_id="[from_search]", new_time_reference="tomorrow at 3 PM")
-
-**Modifying Meeting Details:**
-Colleague: "Change the title of tomorrow's meeting to 'Budget Review'"
-1. find_event_tool(search_criteria="meeting", time_reference="tomorrow")
-2. modify_event_tool(event_id="[from_search]", calendar_id="[from_search]", title="Budget Review")
-
-**Why This Two-Step Approach Works Better:**
-- Clear separation of concerns (search vs. action)
-- Reusable, modular tools
-- Easier to debug and maintain
-- Agent can confirm the right event before making changes
-- More transparent to users about what's happening
-            """),
+TOOLS AVAILABLE:
+- check_availability_tool: Verify specific times
+- create_event_tool: Book meetings (auto-includes colleague email)
+- get_available_slots_for_period_tool: Find free slots
+- get_events_tool: View existing calendar
+- parse_time_reference_tool: Convert time phrases"""),
             MessagesPlaceholder(variable_name="messages"),
             MessagesPlaceholder(variable_name="agent_scratchpad"),
         ])
         
-        return create_tool_calling_agent(self.llm, tools, execution_prompt)
+        # Use complex model for execution decisions
+        return create_tool_calling_agent(self.complex_llm, tools, execution_prompt)
     
     async def _create_graph(self, use_checkpointer: bool = True) -> StateGraph:
         """Create the LangGraph workflow with optional checkpointing.
@@ -2918,30 +2370,26 @@ Colleague: "Change the title of tomorrow's meeting to 'Budget Review'"
             )
             
             # 3. Create the summarization prompt
-            summarization_prompt = f"""You are a conversation summarizer for Athena, an executive assistant AI. Your task is to create a concise summary of the provided conversation excerpt.
+            summarization_prompt = f"""Update conversation summary for executive assistant context.
 
-Previous summary (for context):
-{previous_summary}
+Previous: {previous_summary}
 
-New conversation to summarize:
+New messages:
 {summary_prompt_text}
 
-Please provide a new, consolidated summary that incorporates both the previous summary and the new conversation.
-Preserve key information like:
-- Names and contact details
-- Meeting requests and scheduling details
-- Calendar events and availability discussions
-- Important dates, times, and deadlines
-- Decisions made and actions taken
-- User preferences and requirements
+Create consolidated summary preserving:
+- Contact names/details
+- Meeting requests & scheduling
+- Dates, times, decisions made
+- User preferences
 
-Focus on information that would be relevant for future interactions with this contact.
+Keep summary under 200 words. Focus on calendar-relevant information only.
 
-New consolidated summary:"""
+Summary:"""
             
             try:
-                # 4. Invoke the LLM for summarization
-                summary_response = await self.llm.ainvoke([HumanMessage(content=summarization_prompt)])
+                # 4. Invoke the simple LLM for summarization (cost optimization)
+                summary_response = await self._call_simple_llm([HumanMessage(content=summarization_prompt)])
                 new_summary = summary_response.content
                 
                 logger.info(f"Generated new summary of length {len(new_summary)}")
@@ -3299,6 +2747,10 @@ COLLEAGUE INTERACTION:
                         response = msg.content
                         break
             
+            # Log model usage statistics
+            usage_stats = self.get_model_usage_stats()
+            logger.info(f"📊 Model Usage - Simple: {usage_stats['simple_model_calls']}, Complex: {usage_stats['complex_model_calls']}, Ratio: {usage_stats['cost_ratio']}")
+            
             return {
                 "response": response,
                 "tools_used": [],  # Could be enhanced to track tool usage
@@ -3306,6 +2758,7 @@ COLLEAGUE INTERACTION:
                 "user_id": get_user_id_from_cache(),
                 "contact_id": get_contact_id_from_cache(),
                 "thread_id": thread_id,
+                "model_usage": usage_stats,  # Include model usage in response
                 "extracted_info": {
                     "enhanced_agent": True,
                     "message_count": len(messages),
@@ -3454,12 +2907,16 @@ COLLEAGUE INTERACTION:
             }
 
 # Agent factory functions
-def create_simple_agent(openai_api_key: str = None, model_name: str = None, temperature: float = None) -> SimpleAthenaAgent:
-    """Create and return a SimpleAthenaAgent instance."""
+def create_simple_agent(openai_api_key: str = None, 
+                       simple_model: str = None, 
+                       complex_model: str = None, 
+                       temperature: float = None) -> SimpleAthenaAgent:
+    """Create and return a SimpleAthenaAgent instance with model tiering."""
     
     # Use config defaults if not provided
     api_key = openai_api_key or Config.OPENAI_API_KEY
-    model = model_name or Config.LLM_MODEL
+    simple_mdl = simple_model or Config.LLM_SIMPLE_MODEL  # Default to config simple model
+    complex_mdl = complex_model or Config.LLM_MODEL  # Default to config complex model
     temp = temperature if temperature is not None else Config.LLM_TEMPERATURE
     
     if not api_key:
@@ -3467,7 +2924,8 @@ def create_simple_agent(openai_api_key: str = None, model_name: str = None, temp
     
     return SimpleAthenaAgent(
         openai_api_key=api_key,
-        model_name=model,
+        simple_model=simple_mdl,
+        complex_model=complex_mdl,
         temperature=temp
     )
 

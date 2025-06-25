@@ -38,9 +38,10 @@ class Config:
     HOST = os.getenv("HOST", "0.0.0.0")
     PORT = int(os.getenv("PORT", 8000))
     
-    # LangChain Configuration
-    LLM_MODEL = os.getenv("LLM_MODEL", "gpt-3.5-turbo")
-    LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.7"))
+    # LangChain Configuration - Model Tiering
+    LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o")  # Complex model for execution tasks
+    LLM_SIMPLE_MODEL = os.getenv("LLM_SIMPLE_MODEL", "gpt-3.5-turbo")  # Simple model for intent/summary
+    LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.3"))  # Lower temperature for more consistent responses
     
     # Environment-aware frontend URL configuration
     FRONTEND_URL = os.getenv("FRONTEND_URL", "https://athena-v3-rwuk.onrender.com" if IS_PRODUCTION else "http://localhost:3000")

@@ -150,8 +150,8 @@ async def process_message(request: ProcessMessageRequest):
         
         # Set up calendar service if access token provided
         if request.oauth_access_token:
-            set_calendar_service(request.oauth_access_token, request.oauth_refresh_token, user_id, agent.llm)
-            logger.info(f"Calendar service initialized for user {user_id} with LLM instance")
+            set_calendar_service(request.oauth_access_token, request.oauth_refresh_token, user_id, agent.complex_llm)
+            logger.info(f"Calendar service initialized for user {user_id} with complex LLM instance")
         
         # Set the current user ID for tool context
         set_current_user_id(user_id)
@@ -388,7 +388,7 @@ async def sync_calendars(request: Request):
             agent = get_agent()
             
             # Initialize calendar service with OAuth tokens and LLM instance
-            set_calendar_service(access_token, refresh_token, user_id, agent.llm)
+            set_calendar_service(access_token, refresh_token, user_id, agent.complex_llm)
             calendar_service = get_calendar_service()
             
             # Set user context for tools
